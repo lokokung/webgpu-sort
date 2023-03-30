@@ -1,8 +1,6 @@
 import {
-  TypedArrayBufferView,
-  memcpy,
-  roundUp,
-} from "../common/tools/utils.js";
+  makeBufferWithContents,
+} from "../common/utils.js";
 
 // Generates a shuffled uint array of given size `n` with elements [0, n).
 export function generateUints(n: number): Uint32Array {
@@ -17,21 +15,6 @@ export function generateUints(n: number): Uint32Array {
     [uints[i], uints[j]] = [uints[j], uints[i]];
   }
   return uints;
-}
-
-export function makeBufferWithContents(
-  device: GPUDevice,
-  data: TypedArrayBufferView,
-  usage: GPUBufferUsageFlags
-): GPUBuffer {
-  const buffer = device.createBuffer({
-    mappedAtCreation: true,
-    size: roundUp(data.byteLength, 4),
-    usage,
-  });
-  memcpy({ src: data }, { dst: buffer.getMappedRange() });
-  buffer.unmap();
-  return buffer;
 }
 
 // Renders a visualization of an uint buffer of values into the texture.
@@ -57,6 +40,7 @@ export function visualize(
       },
     ],
   };
+  const textureY = texture.height;
 
   // Create the shaders.
   const shader: GPUShaderModule = device.createShaderModule({
@@ -72,7 +56,7 @@ export function visualize(
       let x = u32(floor(pos.x));
       let y = u32(floor(pos.y));
 
-      if (1024 - elems[x] > y) {
+      if (${textureY} - elems[x] > y) {
         return vec4f(1);
       } else {
         return vec4f(0);

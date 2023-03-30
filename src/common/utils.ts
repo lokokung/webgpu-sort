@@ -101,3 +101,18 @@ export function memcpy(
 ): void {
   subarrayAsU8(dst.dst, dst).set(subarrayAsU8(src.src, src));
 }
+
+export function makeBufferWithContents(
+  device: GPUDevice,
+  data: TypedArrayBufferView,
+  usage: GPUBufferUsageFlags
+): GPUBuffer {
+  const buffer = device.createBuffer({
+    mappedAtCreation: true,
+    size: roundUp(data.byteLength, 4),
+    usage,
+  });
+  memcpy({ src: data }, { dst: buffer.getMappedRange() });
+  buffer.unmap();
+  return buffer;
+}
