@@ -1,0 +1,31 @@
+{
+    "compilerOptions": {
+      "lib": [ "es2020"],
+      "module": "esnext",
+      "outDir": "./out",
+      "allowJs": true,
+      "strict": true,
+      "noImplicitReturns": true,
+      "noFallthroughCasesInSwitch": false,
+      "noUnusedLocals": true,
+      "allowUnreachableCode": false,
+      "moduleResolution": "node",
+      "esModuleInterop": false,
+      "skipLibCheck": true,
+      "target": "es2020",
+      "types": ["@webgpu/types"]
+    },
+    "include": ["src/**/*.ts", "app/**/*.ts"],
+    "typedocOptions": {
+      "entryPointStrategy": "expand",
+      "entryPoints": ["src/"],
+      "excludeInternal": true,
+      "excludeProtected": true,
+      "excludePrivate": true,
+      "validation": {
+        "invalidLink": true,
+        "notExported": false
+      },
+      "out": "docs/tsdoc/"
+    }
+  }

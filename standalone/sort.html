@@ -1,0 +1,54 @@
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <title>WebGPU Sort Demo</title>
+  </head>
+  <body>
+    <canvas id="unsorted" width="1024" height="1024"></canvas>
+    <canvas id="expected" width="1024" height="1024"></canvas>
+    <canvas id="sorted" width="1024" height="1024"></canvas>
+    <script type="module">
+      import { generateUints, makeBufferWithContents, visualize } from '../out/demos/sort.js'
+      import { sort } from '../out/sort/sort.js'
+
+      // Checks for WebGPU implementation.
+      if (typeof navigator === 'undefined' || navigator.gpu === 'undefined') {
+        throw new Error("No WebGPU implementation found")
+      }
+
+      // Get adapter and device for use.
+      const adapter = await navigator.gpu.requestAdapter();
+      if (!adapter) {
+        throw new Error("No appropriate GPUAdapter found");
+      }
+      const device = await adapter.requestDevice();
+
+      // Generate some random data and copy it to the GPU.
+      const data = generateUints(1024);
+      console.log(data);
+      const buffer = makeBufferWithContents(device, data, GPUBufferUsage.STORAGE)
+      data.sort();
+      const sortedBuffer = makeBufferWithContents(device, data, GPUBufferUsage.STORAGE)
+
+      // Get the unsorted context and render to it.
+      const unsortedCanvas = document.querySelector("#unsorted");
+      const unsortedContext = unsortedCanvas.getContext("webgpu");
+      unsortedContext.configure({device, format: navigator.gpu.getPreferredCanvasFormat()});
+      visualize(device, buffer, unsortedContext.getCurrentTexture());
+
+      // Get the expected context and render to it.
+      const expectedCanvas = document.querySelector("#expected");
+      const expectedContext = expectedCanvas.getContext("webgpu");
+      expectedContext.configure({device, format: navigator.gpu.getPreferredCanvasFormat()});
+      visualize(device, sortedBuffer, expectedContext.getCurrentTexture());
+
+      // Get the sorted context and render to it.
+      const sortedCanvas = document.querySelector("#sorted");
+      const sortedContext = sortedCanvas.getContext("webgpu");
+      sortedContext.configure({device, format: navigator.gpu.getPreferredCanvasFormat()});
+      sort(device, buffer, 1024);
+      visualize(device, buffer, sortedContext.getCurrentTexture());
+
+    </script>
+  </body>
+</html>
