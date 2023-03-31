@@ -1,10 +1,23 @@
-import { makeBufferWithContents } from '../common/utils.js';
+import { makeBufferWithContents } from './common/utils.js';
 
 /** Find the nearest power of two greater than or equal to the input value. */
 function nextPowerOfTwo(value: number) {
   return 1 << (32 - Math.clz32(value - 1));
 }
 
+/** Computes the number of dispatch calls needed for the given the number of elements to sort and
+ *  the workgroup size used for the computation.
+ */
+export function computeNumberOfDispatches(n: number, wgs: number): number {
+  let log2 = (x: number) => {
+    return 31 - Math.clz32(x);
+  }
+  const outerLoops = log2(n) - log2(wgs) - 1;
+  const innerLoops = (outerLoops / 2) * (2 * (log2(wgs) + 1) + outerLoops - 1);
+  return (1 + outerLoops + innerLoops);
+}
+
+/** In-place sort of buffer of u32s. */
 export function sort(device: GPUDevice, buffer: GPUBuffer, n: number): void {
   const alignedN = nextPowerOfTwo(n);
   const workGroupSize = Math.min(device.limits.maxComputeWorkgroupSizeX, alignedN / 2);
@@ -21,7 +34,6 @@ export function sort(device: GPUDevice, buffer: GPUBuffer, n: number): void {
     @group(0) @binding(0) var<storage, read_write> value: array<u32>;
     @group(0) @binding(1) var<uniform> params: Params;
 
-    // TODO: Probably need to bump this to 512 when we have k-v pairs.
     var<workgroup> local_value: array<u32, ${workGroupSize * 2}>;
 
     // TODO: Probably need the comparator to be passed in or something later on.
@@ -157,18 +169,18 @@ export function sort(device: GPUDevice, buffer: GPUBuffer, n: number): void {
     },
   });
 
-  let h = workGroupSize * 2;
-
   const encoder = device.createCommandEncoder();
   const pass = encoder.beginComputePass();
   pass.setPipeline(pipeline);
 
+  const paramBuffers: GPUBuffer[] = [];
   let helper = (h: number, algorithm: number) => {
     const params: GPUBuffer = makeBufferWithContents(
       device,
       new Uint32Array([h, algorithm]),
       GPUBufferUsage.UNIFORM
     );
+    paramBuffers.push(params);
 
     const bindGroup = device.createBindGroup({
       layout: pipeline.getBindGroupLayout(0),
@@ -200,6 +212,7 @@ export function sort(device: GPUDevice, buffer: GPUBuffer, n: number): void {
     helper(h, 3);
   }
 
+  let h = workGroupSize * 2;
   local_bms(h);
   h *= 2;
   for (; h <= alignedN; h *= 2) {
@@ -215,4 +228,5 @@ export function sort(device: GPUDevice, buffer: GPUBuffer, n: number): void {
 
   pass.end();
   device.queue.submit([encoder.finish()]);
+  paramBuffers.forEach(b => b.destroy());
 }

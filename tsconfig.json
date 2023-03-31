@@ -15,7 +15,7 @@
       "target": "es2020",
       "types": ["@webgpu/types"]
     },
-    "include": ["src/**/*.ts", "app/**/*.ts"],
+    "include": ["src/**/*.ts"],
     "typedocOptions": {
       "entryPointStrategy": "expand",
       "entryPoints": ["src/"],

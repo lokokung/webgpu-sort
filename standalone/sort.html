@@ -10,9 +10,9 @@
     <script type="module">
       import { makeBufferWithContents } from '../out/common/utils.js'
       import { generateUints, visualize } from '../out/demos/sort.js'
-      import { sort } from '../out/sort/sort.js'
+      import { sort } from '../out/sort.js'
 
-      const kNumElements = 100;
+      const kNumElements = 512;
 
       // Checks for WebGPU implementation.
       if (typeof navigator === 'undefined' || navigator.gpu === 'undefined') {

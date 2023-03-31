@@ -7,7 +7,6 @@ import * as chokidar from 'chokidar';
 import * as express from 'express';
 import * as morgan from 'morgan';
 import * as portfinder from 'portfinder';
-import * as serveIndex from 'serve-index';
 
 // Make sure that makeListing doesn't cache imported spec files. See crawl().
 process.env.STANDALONE_DEV_SERVER = '1';
@@ -105,8 +104,9 @@ app.use(morgan('dev'));
 app.use('/standalone', express.static(path.resolve(srcDir, '../standalone')));
 
 // Serve all other .js files by fetching the source .ts file and compiling it.
-app.get('/out/**/*.js', async (req, res, next) => {
+app.get('/out/**/*.js|/out/*.js', async (req, res, next) => {
   const jsUrl = path.relative('/out', req.url);
+  console.log(jsUrl);
   const tsUrl = jsUrl.replace(/\.js$/, '.ts');
   if (compileCache.has(tsUrl)) {
     res.setHeader('Content-Type', 'application/javascript');
@@ -156,7 +156,3 @@ portfinder.getPort({ host, port }, (err, port) => {
     });
   });
 });
-
-// Serve everything else (not .js) as static, and directories as directory listings.
-app.use('/out', serveIndex(path.resolve(srcDir, '../src')));
-app.use('/out', express.static(path.resolve(srcDir, '../src')));
