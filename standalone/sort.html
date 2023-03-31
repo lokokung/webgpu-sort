@@ -8,7 +8,7 @@
     <canvas id="expected"></canvas>
     <canvas id="sorted"></canvas>
     <script type="module">
-      import { makeBufferWithContents } from '../out/common/utils.js'
+      import { makeBufferWithContents } from '../out/webgpu/util/buffer.js'
       import { generateUints, visualize } from '../out/demos/sort.js'
       import { sort } from '../out/sort.js'
 
@@ -28,7 +28,6 @@
 
       // Generate some random data and copy it to the GPU.
       const data = generateUints(kNumElements);
-      console.log(data);
       const buffer = makeBufferWithContents(device, data, GPUBufferUsage.STORAGE)
       data.sort();
       const sortedBuffer = makeBufferWithContents(device, data, GPUBufferUsage.STORAGE)

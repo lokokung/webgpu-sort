@@ -1,6 +1,4 @@
-import {
-  makeBufferWithContents,
-} from "../common/utils.js";
+import { makeBufferWithContents } from '../webgpu/util/buffer.js';
 
 // Generates a shuffled uint array of given size `n` with elements [0, n).
 export function generateUints(n: number): Uint32Array {

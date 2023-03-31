@@ -1,9 +1,5 @@
-import { makeBufferWithContents } from './common/utils.js';
-
-/** Find the nearest power of two greater than or equal to the input value. */
-function nextPowerOfTwo(value: number) {
-  return 1 << (32 - Math.clz32(value - 1));
-}
+import { makeBufferWithContents } from './webgpu/util/buffer.js';
+import { nextPowerOfTwo } from './webgpu/util/math.js';
 
 /** Computes the number of dispatch calls needed for the given the number of elements to sort and
  *  the workgroup size used for the computation.
