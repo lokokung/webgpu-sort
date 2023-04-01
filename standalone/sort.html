@@ -10,7 +10,7 @@
     <script type="module">
       import { makeBufferWithContents } from '../out/webgpu/util/buffer.js'
       import { generateUints, visualize } from '../out/demos/sort.js'
-      import { sort } from '../out/sort.js'
+      import { createInPlaceSorter } from '../out/sort.js'
 
       const kNumElements = 512;
 
@@ -54,7 +54,8 @@
       sortedContext.canvas.width = kNumElements;
       sortedContext.canvas.height = kNumElements;
       sortedContext.configure({device, format: navigator.gpu.getPreferredCanvasFormat()});
-      sort(device, buffer, kNumElements);
+      const sorter = createInPlaceSorter('u32');
+      sorter.sort(device, buffer, kNumElements);
       visualize(device, buffer, sortedContext.getCurrentTexture());
 
     </script>
