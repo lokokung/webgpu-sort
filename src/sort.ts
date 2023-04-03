@@ -33,11 +33,9 @@ interface BuiltinSortElementTypeInfo {
 export interface SortElementType {
   /** Name of the element type. */
   type: string;
-  /** Direct comparison function to compare two values of the given type. */
-  comp?: WGSLFunction;
   /** Distance function used to key the values into f32 space. */
-  dist?: WGSLFunction;
-  /** Struct definition of the element type if it is not a simple built-in. */
+  dist: WGSLFunction;
+  /** Struct definition of the element type. */
   definition?: string;
 }
 
@@ -95,6 +93,17 @@ export function createInPlaceSorter(
   };
 }
 
+export function createIndexSorter(
+  type: SortElementType,
+  mode: SortMode = 'ascending'
+): IndexSorter {
+  return {
+    sort(device, b, n) {
+      return sortIndex(type, mode, device, n, b);
+    },
+  };
+}
+
 function createBuiltinSortShader(
   type: BuiltinSortElementType,
   mode: SortMode,
@@ -117,7 +126,7 @@ function createBuiltinSortShader(
   //       even when we are doing in-place for simple built-in types. We could probably have another
   //       shader instead, but using this for simplicity for now.
   var<workgroup> local_k: array<${type}, ${wgs * 2}>;
-  ${kv_pairs ? 'var<workgroup> local_v: array<u32, ${wgs * 2}>;' : ''}
+  ${kv_pairs ? `var<workgroup> local_v: array<u32, ${wgs * 2}>;` : ''}
 
   // Drop-in comparison function for the built-ins.
   ${mode === 'ascending' ? info.lt.code : info.gt.code}
@@ -275,6 +284,81 @@ function createBuiltinSortShader(
   `;
 }
 
+function createDistanceMapShader(type: SortElementType, wgs: number, n: number): string {
+  return `
+  // Declare the custom struct type.
+  ${!!type.definition ? type.definition : ''}
+
+  // Declare the distance mapping function.
+  ${type.dist.code}
+
+  @group(0) @binding(0) var<storage, read> input: array<${type.type}, ${n}>;
+  @group(0) @binding(1) var<storage, read_write> k: array<f32, ${n}>;
+  @group(0) @binding(2) var<storage, read_write> v: array<u32, ${n}>;
+
+  @compute @workgroup_size(${wgs}) fn main(@builtin(global_invocation_id) i: vec3u) {
+    if (i.x < ${n}) {
+      k[i.x] = ${type.dist.entryPoint}(input[i.x]);
+      v[i.x] = i.x;
+    }
+  }
+  `;
+}
+
+function distanceMap(
+  type: SortElementType,
+  device: GPUDevice,
+  n: number,
+  input: GPUBuffer
+): { k: GPUBuffer; v: GPUBuffer } {
+  const alignedN: number = nextPowerOfTwo(n);
+  const workGroupSize: number = Math.min(device.limits.maxComputeWorkgroupSizeX, alignedN);
+  const workGroupCount: number = alignedN / workGroupSize;
+
+  // Create the shader.
+  const shader: GPUShaderModule = device.createShaderModule({
+    code: createDistanceMapShader(type, workGroupSize, n),
+  });
+
+  // Create the compute pipeline needed.
+  const pipeline = device.createComputePipeline({
+    layout: 'auto',
+    compute: {
+      module: shader,
+      entryPoint: 'main',
+    },
+  });
+
+  // Create the output buffers
+  const k = device.createBuffer({
+    size: 4 * n,
+    usage: GPUBufferUsage.STORAGE,
+  });
+  const v = device.createBuffer({
+    size: 4 * n,
+    usage: GPUBufferUsage.STORAGE,
+  });
+
+  // Create the bind group.
+  const bindGroup = device.createBindGroup({
+    layout: pipeline.getBindGroupLayout(0),
+    entries: [
+      { binding: 0, resource: { buffer: input } },
+      { binding: 1, resource: { buffer: k } },
+      { binding: 2, resource: { buffer: v } },
+    ],
+  });
+
+  const encoder = device.createCommandEncoder();
+  const pass = encoder.beginComputePass();
+  pass.setPipeline(pipeline);
+  pass.setBindGroup(0, bindGroup);
+  pass.dispatchWorkgroups(workGroupCount);
+  pass.end();
+  device.queue.submit([encoder.finish()]);
+  return { k, v };
+}
+
 function sortBuiltin(
   type: BuiltinSortElementType,
   mode: SortMode,
@@ -283,12 +367,12 @@ function sortBuiltin(
   k: GPUBuffer,
   v?: GPUBuffer
 ): void {
-  const alignedN = nextPowerOfTwo(n);
+  const alignedN: number = nextPowerOfTwo(n);
   // Halved for k-v pairs in local memory.
-  const maxWorkgroupSize = v
+  const maxWorkgroupSize: number = v
     ? device.limits.maxComputeWorkgroupSizeX / 2
     : device.limits.maxComputeWorkgroupSizeX;
-  const workGroupSize = Math.min(maxWorkgroupSize, alignedN / 2);
+  const workGroupSize: number = Math.min(maxWorkgroupSize, alignedN / 2);
   const workGroupCount: number = alignedN / (workGroupSize * 2);
 
   // Create the shader.
@@ -373,4 +457,18 @@ function sortBuiltin(
   pass.end();
   device.queue.submit([encoder.finish()]);
   paramBuffers.forEach(b => b.destroy());
+}
+
+function sortIndex(
+  type: SortElementType,
+  mode: SortMode,
+  device: GPUDevice,
+  n: number,
+  b: GPUBuffer
+): GPUBuffer {
+  // First we need to convert the input into key-value pairs of (distance, index).
+  const { k, v } = distanceMap(type, device, n, b);
+  sortBuiltin('f32', mode, device, n, k, v);
+  k.destroy();
+  return v;
 }

@@ -1,63 +1,77 @@
 <html>
   <head>
-    <meta charset="UTF-8">
+    <meta charset="UTF-8" />
     <title>WebGPU Sort Demo</title>
   </head>
   <body>
     <canvas id="unsorted"></canvas>
     <canvas id="expected"></canvas>
     <canvas id="sorted"></canvas>
+    <canvas id="isorted"></canvas>
     <script type="module">
-      import { makeBufferWithContents } from '../out/webgpu/util/buffer.js'
-      import { generateUints, visualize } from '../out/demos/sort.js'
-      import { createInPlaceSorter } from '../out/sort.js'
+      import { makeBufferWithContents } from '../out/webgpu/util/buffer.js';
+      import { generateUints, visualize, visualizeIndex } from '../out/demos/sort.js';
+      import { createIndexSorter, createInPlaceSorter } from '../out/sort.js';
 
       const kNumElements = 512;
 
       // Checks for WebGPU implementation.
       if (typeof navigator === 'undefined' || navigator.gpu === 'undefined') {
-        throw new Error("No WebGPU implementation found")
+        throw new Error('No WebGPU implementation found');
       }
 
       // Get adapter and device for use.
       const adapter = await navigator.gpu.requestAdapter();
       if (!adapter) {
-        throw new Error("No appropriate GPUAdapter found");
+        throw new Error('No appropriate GPUAdapter found');
       }
       const device = await adapter.requestDevice();
 
       // Generate some random data and copy it to the GPU.
       const data = generateUints(kNumElements);
-      const buffer = makeBufferWithContents(device, data, GPUBufferUsage.STORAGE)
+      const buffer = makeBufferWithContents(device, data, GPUBufferUsage.STORAGE);
       data.sort();
-      const sortedBuffer = makeBufferWithContents(device, data, GPUBufferUsage.STORAGE)
+      const sortedBuffer = makeBufferWithContents(device, data, GPUBufferUsage.STORAGE);
 
       // Get the unsorted context and render to it.
-      const unsortedCanvas = document.querySelector("#unsorted");
-      const unsortedContext = unsortedCanvas.getContext("webgpu");
+      const unsortedCanvas = document.querySelector('#unsorted');
+      const unsortedContext = unsortedCanvas.getContext('webgpu');
       unsortedContext.canvas.width = kNumElements;
       unsortedContext.canvas.height = kNumElements;
-      unsortedContext.configure({device, format: navigator.gpu.getPreferredCanvasFormat()});
+      unsortedContext.configure({ device, format: navigator.gpu.getPreferredCanvasFormat() });
       visualize(device, buffer, unsortedContext.getCurrentTexture());
 
       // Get the expected context and render to it.
-      const expectedCanvas = document.querySelector("#expected");
-      const expectedContext = expectedCanvas.getContext("webgpu");
+      const expectedCanvas = document.querySelector('#expected');
+      const expectedContext = expectedCanvas.getContext('webgpu');
       expectedContext.canvas.width = kNumElements;
       expectedContext.canvas.height = kNumElements;
-      expectedContext.configure({device, format: navigator.gpu.getPreferredCanvasFormat()});
+      expectedContext.configure({ device, format: navigator.gpu.getPreferredCanvasFormat() });
       visualize(device, sortedBuffer, expectedContext.getCurrentTexture());
 
       // Get the sorted context and render to it.
-      const sortedCanvas = document.querySelector("#sorted");
-      const sortedContext = sortedCanvas.getContext("webgpu");
+      const sortedCanvas = document.querySelector('#sorted');
+      const sortedContext = sortedCanvas.getContext('webgpu');
       sortedContext.canvas.width = kNumElements;
       sortedContext.canvas.height = kNumElements;
-      sortedContext.configure({device, format: navigator.gpu.getPreferredCanvasFormat()});
+      sortedContext.configure({ device, format: navigator.gpu.getPreferredCanvasFormat() });
       const sorter = createInPlaceSorter('u32');
       sorter.sort(device, buffer, kNumElements);
       visualize(device, buffer, sortedContext.getCurrentTexture());
 
+      // Sort using indices.
+      const buffer2 = makeBufferWithContents(device, data, GPUBufferUsage.STORAGE);
+      const indexSortedCanvas = document.querySelector('#isorted');
+      const indexSortedContext = indexSortedCanvas.getContext('webgpu');
+      indexSortedContext.canvas.width = kNumElements;
+      indexSortedContext.canvas.height = kNumElements;
+      indexSortedContext.configure({ device, format: navigator.gpu.getPreferredCanvasFormat() });
+      const indexSorter = createIndexSorter({
+        type: 'u32',
+        dist: { code: 'fn _dist(x: u32) -> f32 { return f32(x); }', entryPoint: '_dist' },
+      });
+      const indices = indexSorter.sort(device, buffer2, kNumElements);
+      visualizeIndex(device, buffer2, indices, indexSortedContext.getCurrentTexture());
     </script>
   </body>
 </html>
