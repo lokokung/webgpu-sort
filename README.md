@@ -19,3 +19,5 @@ Open [`http://localhost:8080/standalone/tests.html`](http://localhost:8080/stand
 - Tim Gfrerer and [Ponies & Light Ltd.](https://poniesandlight.co.uk/about/)'s
   [Bitonic Merge Sort in Vulkan Compute](https://poniesandlight.co.uk/reflect/bitonic_merge_sort/)
   article.
+
+- [Alan Zucconi](https://www.alanzucconi.com/)'s [The Incredibly Challenging Task of Sorting Colours](https://www.alanzucconi.com/2015/09/30/colour-sorting/) article.

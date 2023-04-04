@@ -8,9 +8,21 @@
     <canvas id="expected"></canvas>
     <canvas id="sorted"></canvas>
     <canvas id="isorted"></canvas>
+    <p></p>
+
+    <canvas id="unsorted_colors"></canvas>
+    <p></p>
+    <canvas id="sorted_colors"></canvas>
+
     <script type="module">
       import { makeBufferWithContents } from '../out/webgpu/util/buffer.js';
-      import { generateUints, visualize, visualizeIndex } from '../out/demos/sort.js';
+      import {
+        generateColors,
+        generateUints,
+        visualize,
+        visualizeColors,
+        visualizeIndex,
+      } from '../out/demos/sort.js';
       import { sortIndices, SortInPlaceElementType, sortInPlace } from '../out/sort.js';
 
       const kNumElements = 512;
@@ -81,6 +93,89 @@
         buffer2
       );
       visualizeIndex(device, buffer2, indices, indexSortedContext.getCurrentTexture());
+
+      // Generate and visualize colors.
+      const kNumColors = 1024;
+
+      const unsortedColorsCanvas = document.querySelector('#unsorted_colors');
+      const unsortedColorContext = unsortedColorsCanvas.getContext('webgpu');
+      unsortedColorContext.configure({ device, format: navigator.gpu.getPreferredCanvasFormat() });
+      unsortedColorContext.canvas.width = kNumColors;
+      unsortedColorContext.canvas.height = 64;
+      const colors = generateColors(kNumColors);
+      const colorBuffer = makeBufferWithContents(device, colors, GPUBufferUsage.STORAGE);
+      visualizeColors(device, colorBuffer, unsortedColorContext.getCurrentTexture());
+
+      const sortedColorsCanvas = document.querySelector('#sorted_colors');
+      const sortedColorContext = sortedColorsCanvas.getContext('webgpu');
+      sortedColorContext.configure({ device, format: navigator.gpu.getPreferredCanvasFormat() });
+      sortedColorContext.canvas.width = kNumColors;
+      sortedColorContext.canvas.height = 64;
+      sortInPlace(
+        {
+          type: 'vec4f',
+          comp: {
+            code: `
+            fn _rgb_to_adjusted_hsv(c: vec4f) -> vec3u {
+              // First just compute the normal HSV.
+              let cmax = max(c.r, max(c.g, c.b));
+              let cmin = min(c.r, min(c.g, c.b));
+              let diff = cmax - cmin;
+              var h: f32 = -1;
+              var s: f32 = -1;
+              var v: f32 = cmax * 100;
+
+              if (cmax == cmin) {
+                h = 0;
+              } else if (cmax == c.r) {
+                h = (60 * ((c.g - c.b) / diff) + 360) % 360;
+              } else if (cmax == c.g) {
+                h = (60 * ((c.b - c.r) / diff) + 120) % 360;
+              } else if (cmax == c.b) {
+                h = (60 * ((c.r - c.g) / diff) + 240) % 360;
+              }
+              h /= 360;
+
+              if (cmax == 0) {
+                s = 0;
+              } else {
+                s = (diff / cmax) * 100;
+              }
+
+              // Adjust the HSV for the purpose of sorting.
+              let kReps = 8.0;
+              let lum = sqrt(.241 * c.r + .691 * c.g + .068 * c.b);
+
+              let h2 = u32(h * kReps);
+              var lum2 = u32(lum * kReps);
+              var v2 = u32(v * kReps);
+              if (h2 % 2 == 1) {
+                v2 = u32(kReps) - v2;
+                lum2 = u32(kReps) - lum2;
+              }
+
+              return vec3u(h2, lum2, v2);
+            }
+
+            fn _lt(left: vec4f, right: vec4f) -> bool {
+              let l = _rgb_to_adjusted_hsv(left);
+              let r = _rgb_to_adjusted_hsv(right);
+              if (l.x == r.x) {
+                if (l.y == r.y) {
+                  return l.z < r.z;
+                }
+                return l.y < r.y;
+              }
+              return l.x < r.x;
+            }`,
+            entryPoint: '_lt',
+          },
+        },
+        device,
+        kNumColors,
+        colorBuffer
+      );
+      visualizeColors(device, colorBuffer, sortedColorContext.getCurrentTexture());
     </script>
   </body>
 </html>

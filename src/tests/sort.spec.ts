@@ -31,7 +31,7 @@ function generateBuiltinData(type: BuiltinInPlaceElementTypes, n: number): Typed
   }
 }
 
-g.test('builtins,inplace')
+g.test('inplace,builtins')
   .desc('Tests in-place, key only sorting of builtin types.')
   .params(u =>
     u
