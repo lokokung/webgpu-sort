@@ -1,19 +1,19 @@
+import { makeShaderDataDefinitions } from './external/greggman/webgpu-utils/webgpu-utils.module.js';
 import { makeBufferWithContents } from './webgpu/util/buffer.js';
 import { nextPowerOfTwo } from './webgpu/util/math.js';
 
-/** Sorter that sorts GPUBuffer in place. Currently can only be used with basic builtin types, i.e.
- * u32, i32, and f32.
- */
-export interface InPlaceSorter {
-  /** Sorts the `n` typed elements in `b` in place. */
-  sort(device: GPUDevice, b: GPUBuffer, n: number): void;
+/** Sort mode type. */
+export type SortMode = 'ascending' | 'descending';
+
+/** Basic element type interface that is extended by implementations. */
+interface ElementType {
+  /** Name of the element type. */
+  type: string;
+  /** Struct definition of the element type if applicable. */
+  definition?: string;
 }
 
-export interface IndexSorter {
-  /** Returns a GPUBuffer `indices` such that `b[indices[0..n]]` is a sorted view of `b` */
-  sort(device: GPUDevice, b: GPUBuffer, n: number): GPUBuffer;
-}
-
+/** General WGSL function structure. */
 export interface WGSLFunction {
   /** WGSL code for the function. */
   code: string;
@@ -21,118 +21,90 @@ export interface WGSLFunction {
   entryPoint: string;
 }
 
-export type SortMode = 'ascending' | 'descending';
-
-interface BuiltinSortElementTypeInfo {
-  /** Less than function. */
-  lt: WGSLFunction;
-  /** Greater than function. */
-  gt: WGSLFunction;
+/** WGSL function that maps the input into the given `distType`. */
+export interface WGSLDistanceFunction extends WGSLFunction {
+  /** Type of the result computed via the distance function. Note that it must be an in-place
+   *  sortable element. */
+  distType: SortInPlaceElementType;
 }
 
-export interface SortElementType {
-  /** Name of the element type. */
-  type: string;
-  /** Distance function used to key the values into f32 space. */
-  dist: WGSLFunction;
-  /** Struct definition of the element type. */
-  definition?: string;
+/** In-place sort element type definition and a set of ease-of-use defaults for common types. */
+export interface SortInPlaceElementType extends ElementType {
+  /** Comparison function for the elements, should return true when 'left' < 'right'. */
+  comp: WGSLFunction;
+}
+interface SortInPlaceElementTypeMap {
+  u32: SortInPlaceElementType;
+  i32: SortInPlaceElementType;
+  f32: SortInPlaceElementType;
+}
+export const SortInPlaceElementType: SortInPlaceElementTypeMap = {
+  u32: {
+    type: 'u32',
+    comp: {
+      code: 'fn _lt(left: u32, right: u32) -> bool { return left < right; }',
+      entryPoint: '_lt',
+    },
+  },
+  i32: {
+    type: 'i32',
+    comp: {
+      code: 'fn _lt(left: i32, right: i32) -> bool { return left < right; }',
+      entryPoint: '_lt',
+    },
+  },
+  f32: {
+    type: 'f32',
+    comp: {
+      code: 'fn _lt(left: f32, right: f32) -> bool { return left < right; }',
+      entryPoint: '_lt',
+    },
+  },
+} as const;
+
+/** Index sort element types definition. */
+export interface SortIndexElementType extends ElementType {
+  /** Distance function used to key the values into a in-place sortable type. */
+  dist: WGSLDistanceFunction;
 }
 
-/** Per built-in element type info. */
-export type BuiltinSortElementType = 'u32' | 'i32' | 'f32';
-const kBuiltinElementTypes: {
-  readonly [k in BuiltinSortElementType]: BuiltinSortElementTypeInfo;
-} =
-  /* prettier-ignore */ {
-  'u32': {
-    lt: {
-      code: "fn _lt(left: u32, right: u32) -> bool { return left < right; }",
-      entryPoint: "_lt",
-    },
-    gt: {
-      code: "fn _gt(left: u32, right: u32) -> bool { return left > right; }",
-      entryPoint: "_gt",
-    },
-  },
-  'i32': {
-    lt: {
-      code: "fn _lt(left: i32, right: i32) -> bool { return left < right; }",
-      entryPoint: "_lt",
-    },
-    gt: {
-      code: "fn _gt(left: i32, right: i32) -> bool { return left > right; }",
-      entryPoint: "_gt",
-    },
-  },
-  'f32': {
-    lt: {
-      code: "fn _lt(left: f32, right: f32) -> bool { return left < right; }",
-      entryPoint: "_lt",
-    },
-    gt: {
-      code: "fn _gt(left: f32, right: f32) -> bool { return left > right; }",
-      entryPoint: "_gt",
-    },
-  },
-};
-
-export interface InPlaceSorterDescriptor {
-  /** Element type that is expected to be sorted. */
-  elementType: SortElementType;
-}
-
-export function createInPlaceSorter(
-  type: BuiltinSortElementType,
-  mode: SortMode = 'ascending'
-): InPlaceSorter {
-  return {
-    sort(device, b, n) {
-      sortBuiltin(type, mode, device, n, b);
-    },
+function computeSizeOfElement(elemType: ElementType): number {
+  const code = `
+  ${!!elemType.definition ? elemType.definition : ''}
+  struct Element {
+    e: ${elemType.type}
   };
+  `;
+  const defs = makeShaderDataDefinitions(code);
+  return defs.structs['Element'].size;
 }
 
-export function createIndexSorter(
-  type: SortElementType,
-  mode: SortMode = 'ascending'
-): IndexSorter {
-  return {
-    sort(device, b, n) {
-      return sortIndex(type, mode, device, n, b);
-    },
-  };
-}
-
-function createBuiltinSortShader(
-  type: BuiltinSortElementType,
+function createSortKeyValueInPlaceShader(
+  type: SortInPlaceElementType,
   mode: SortMode,
   wgs: number,
   n: number,
   kv_pairs: boolean = true
 ): string {
-  const info = kBuiltinElementTypes[type];
   return `
   struct Params {
     h: u32,
     algorithm: u32
-  }
+  };
+  ${type.definition ? type.definition : ''}
 
-  @group(0) @binding(0) var<storage, read_write> k: array<${type}>;
+  @group(0) @binding(0) var<storage, read_write> k: array<${type.type}>;
   ${kv_pairs ? '@group(0) @binding(1) var<storage, read_write> v: array<u32>;' : ''}
   @group(1) @binding(0) var<uniform> params: Params;
 
-  // TODO: Since we use 2 arrays here always, this means that work group size needs to be smaller
-  //       even when we are doing in-place for simple built-in types. We could probably have another
-  //       shader instead, but using this for simplicity for now.
-  var<workgroup> local_k: array<${type}, ${wgs * 2}>;
+  var<workgroup> local_k: array<${type.type}, ${wgs * 2}>;
   ${kv_pairs ? `var<workgroup> local_v: array<u32, ${wgs * 2}>;` : ''}
 
-  // Drop-in comparison function for the built-ins.
-  ${mode === 'ascending' ? info.lt.code : info.gt.code}
+  // Comparison function.
+  ${type.comp.code}
 
-  fn _compare(left: ${type}, right: ${type}) -> bool {
-    return ${mode === 'ascending' ? info.lt.entryPoint : info.gt.entryPoint}(left, right);
+  fn _compare(left: ${type.type}, right: ${type.type}) -> bool {
+    return ${mode === 'ascending' ? '' : '!'}${type.comp.entryPoint}(left, right);
   }
 
   fn global_compare_and_swap(idx: vec2u) {
@@ -284,16 +256,17 @@ function createBuiltinSortShader(
   `;
 }
 
-function createDistanceMapShader(type: SortElementType, wgs: number, n: number): string {
+function createDistanceMapShader(type: SortIndexElementType, wgs: number, n: number): string {
   return `
-  // Declare the custom struct type.
-  ${!!type.definition ? type.definition : ''}
+  // Declare the custom struct type(s)
+  ${type.dist.distType.definition ? type.dist.distType.definition : ''}
+  ${type.definition ? type.definition : ''}
 
   // Declare the distance mapping function.
   ${type.dist.code}
 
   @group(0) @binding(0) var<storage, read> input: array<${type.type}, ${n}>;
-  @group(0) @binding(1) var<storage, read_write> k: array<f32, ${n}>;
+  @group(0) @binding(1) var<storage, read_write> k: array<${type.dist.distType.type}, ${n}>;
   @group(0) @binding(2) var<storage, read_write> v: array<u32, ${n}>;
 
   @compute @workgroup_size(${wgs}) fn main(@builtin(global_invocation_id) i: vec3u) {
@@ -306,7 +279,7 @@ function createDistanceMapShader(type: SortElementType, wgs: number, n: number):
 }
 
 function distanceMap(
-  type: SortElementType,
+  type: SortIndexElementType,
   device: GPUDevice,
   n: number,
   input: GPUBuffer
@@ -336,7 +309,7 @@ function distanceMap(
   });
   const v = device.createBuffer({
     size: 4 * n,
-    usage: GPUBufferUsage.STORAGE,
+    usage: input.usage,
   });
 
   // Create the bind group.
@@ -359,8 +332,8 @@ function distanceMap(
   return { k, v };
 }
 
-function sortBuiltin(
-  type: BuiltinSortElementType,
+function sortKeyValueInPlace(
+  type: SortInPlaceElementType,
   mode: SortMode,
   device: GPUDevice,
   n: number,
@@ -368,16 +341,21 @@ function sortBuiltin(
   v?: GPUBuffer
 ): void {
   const alignedN: number = nextPowerOfTwo(n);
-  // Halved for k-v pairs in local memory.
-  const maxWorkgroupSize: number = v
-    ? device.limits.maxComputeWorkgroupSizeX / 2
-    : device.limits.maxComputeWorkgroupSizeX;
-  const workGroupSize: number = Math.min(maxWorkgroupSize, alignedN / 2);
+  const elemSize: number = computeSizeOfElement(type);
+  // We need to make sure that we do not over allocate workgroup memory depending on the size of
+  // elements.
+  const maxWorkGroupSizeForMemory =
+    device.limits.maxComputeWorkgroupStorageSize / 2 / nextPowerOfTwo(elemSize + (v ? 4 : 0));
+  const workGroupSize: number = Math.min(
+    device.limits.maxComputeWorkgroupSizeX,
+    maxWorkGroupSizeForMemory,
+    alignedN / 2
+  );
   const workGroupCount: number = alignedN / (workGroupSize * 2);
 
   // Create the shader.
   const shader: GPUShaderModule = device.createShaderModule({
-    code: createBuiltinSortShader(type, mode, workGroupSize, n, !!v),
+    code: createSortKeyValueInPlaceShader(type, mode, workGroupSize, n, !!v),
   });
 
   // Create the compute pipeline needed.
@@ -459,16 +437,26 @@ function sortBuiltin(
   paramBuffers.forEach(b => b.destroy());
 }
 
-function sortIndex(
-  type: SortElementType,
-  mode: SortMode,
+export function sortInPlace(
+  type: SortInPlaceElementType,
   device: GPUDevice,
   n: number,
-  b: GPUBuffer
+  buffer: GPUBuffer,
+  mode: SortMode = 'ascending'
+) {
+  sortKeyValueInPlace(type, mode, device, n, buffer);
+}
+
+export function sortIndices(
+  type: SortIndexElementType,
+  device: GPUDevice,
+  n: number,
+  buffer: GPUBuffer,
+  mode: SortMode = 'ascending'
 ): GPUBuffer {
   // First we need to convert the input into key-value pairs of (distance, index).
-  const { k, v } = distanceMap(type, device, n, b);
-  sortBuiltin('f32', mode, device, n, k, v);
+  const { k, v } = distanceMap(type, device, n, buffer);
+  sortKeyValueInPlace(type.dist.distType, mode, device, n, k, v);
   k.destroy();
   return v;
 }

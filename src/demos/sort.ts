@@ -159,7 +159,7 @@ export function visualizeIndex(
       targets: [{ format: texture.format }],
     },
   });
-  
+
   // Create the bind group.
   const bindGroup: GPUBindGroup = device.createBindGroup({
     layout: pipeline.getBindGroupLayout(0),

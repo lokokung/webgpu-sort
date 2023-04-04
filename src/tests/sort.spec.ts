@@ -6,12 +6,14 @@ import { Fixture } from '../common/framework/fixture.js';
 import { makeTestGroup } from '../common/framework/test_group.js';
 import { getGPU } from '../common/util/navigator_gpu.js';
 import { TypedArrayBufferView, assert } from '../common/util/util.js';
-import { BuiltinSortElementType, SortMode, createInPlaceSorter } from '../sort.js';
+import { SortInPlaceElementType, SortMode, sortInPlace } from '../sort.js';
 import { makeBufferWithContents } from '../webgpu/util/buffer.js';
 
 export const g = makeTestGroup(Fixture);
 
-function generateBuiltinData(type: BuiltinSortElementType, n: number): TypedArrayBufferView {
+type BuiltinInPlaceElementTypes = keyof typeof SortInPlaceElementType;
+
+function generateBuiltinData(type: BuiltinInPlaceElementTypes, n: number): TypedArrayBufferView {
   switch (type) {
     case 'f32': {
       return new Float32Array(Array.from({ length: n }, () => Math.random()));
@@ -33,7 +35,7 @@ g.test('builtins,inplace')
   .desc('Tests in-place, key only sorting of builtin types.')
   .params(u =>
     u
-      .combine('type', ['u32', 'i32', 'f32'] as BuiltinSortElementType[])
+      .combine('type', ['u32', 'i32', 'f32'] as BuiltinInPlaceElementTypes[])
       .combine('mode', ['ascending', 'descending'] as SortMode[])
       .beginSubcases()
       .combine('size', [16, 64, 100, 2048, 10000])
@@ -55,21 +57,17 @@ g.test('builtins,inplace')
       data,
       GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
     );
-    await device.queue.onSubmittedWorkDone();
-    data.sort((a, b) => mode === 'ascending' ? a - b : b - a);
-    const sorter = createInPlaceSorter(type, mode);
-    sorter.sort(device, buffer, size);
-    await device.queue.onSubmittedWorkDone();
+    data.sort((a, b) => (mode === 'ascending' ? a - b : b - a));
+    sortInPlace(SortInPlaceElementType[type], device, size, buffer, mode);
 
     // Copy the data to a readable buffer.
     const sorted = device.createBuffer({
       size: buffer.size,
-      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ
-    })
-    const encoder = device.createCommandEncoder()
+      usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+    });
+    const encoder = device.createCommandEncoder();
     encoder.copyBufferToBuffer(buffer, 0, sorted, 0, buffer.size);
     device.queue.submit([encoder.finish()]);
-    await device.queue.onSubmittedWorkDone();
     await sorted.mapAsync(GPUMapMode.READ);
     let result: TypedArrayBufferView;
     switch (type) {

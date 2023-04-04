@@ -11,7 +11,7 @@
     <script type="module">
       import { makeBufferWithContents } from '../out/webgpu/util/buffer.js';
       import { generateUints, visualize, visualizeIndex } from '../out/demos/sort.js';
-      import { createIndexSorter, createInPlaceSorter } from '../out/sort.js';
+      import { sortIndices, SortInPlaceElementType, sortInPlace } from '../out/sort.js';
 
       const kNumElements = 512;
 
@@ -55,8 +55,9 @@
       sortedContext.canvas.width = kNumElements;
       sortedContext.canvas.height = kNumElements;
       sortedContext.configure({ device, format: navigator.gpu.getPreferredCanvasFormat() });
-      const sorter = createInPlaceSorter('u32');
-      sorter.sort(device, buffer, kNumElements);
+      sortInPlace(SortInPlaceElementType.u32, device, kNumElements, buffer);
+      // const sorter = createInPlaceSorter('u32');
+      // sorter.sort(device, buffer, kNumElements);
       visualize(device, buffer, sortedContext.getCurrentTexture());
 
       // Sort using indices.
@@ -66,11 +67,19 @@
       indexSortedContext.canvas.width = kNumElements;
       indexSortedContext.canvas.height = kNumElements;
       indexSortedContext.configure({ device, format: navigator.gpu.getPreferredCanvasFormat() });
-      const indexSorter = createIndexSorter({
-        type: 'u32',
-        dist: { code: 'fn _dist(x: u32) -> f32 { return f32(x); }', entryPoint: '_dist' },
-      });
-      const indices = indexSorter.sort(device, buffer2, kNumElements);
+      const indices = sortIndices(
+        {
+          type: 'u32',
+          dist: {
+            code: 'fn _dist(x: u32) -> f32 { return f32(x); }',
+            entryPoint: '_dist',
+            distType: SortInPlaceElementType.f32,
+          },
+        },
+        device,
+        kNumElements,
+        buffer2
+      );
       visualizeIndex(device, buffer2, indices, indexSortedContext.getCurrentTexture());
     </script>
   </body>
