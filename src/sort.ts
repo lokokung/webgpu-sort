@@ -34,31 +34,84 @@ export interface SortInPlaceElementType extends ElementType {
   comp: WGSLFunction;
 }
 interface SortInPlaceElementTypeMap {
+  // Numeric scalar types just use the primitive comparator.
   u32: SortInPlaceElementType;
   i32: SortInPlaceElementType;
   f32: SortInPlaceElementType;
+
+  // Numeric vectors use element-wise numeric scalar comparator.
+  vec2u: SortInPlaceElementType;
+  vec3u: SortInPlaceElementType;
+  vec4u: SortInPlaceElementType;
+  vec2i: SortInPlaceElementType;
+  vec3i: SortInPlaceElementType;
+  vec4i: SortInPlaceElementType;
+  vec2f: SortInPlaceElementType;
+  vec3f: SortInPlaceElementType;
+  vec4f: SortInPlaceElementType;
+}
+function numericScalarLt(type: string): string {
+  return `fn _lt(l: ${type}, r: ${type}) -> bool { return l < r; }`;
+}
+function numericVectorLt(type: string, n: number) {
+  return `
+  fn _lt(l: ${type}, r: ${type}) -> bool {
+    for (var i = 0; i < ${n}; i++) {
+      if (l[i] != r[i]) {
+        return l[i] < r[i];
+      }
+    }
+    return false;
+  }`
 }
 export const SortInPlaceElementType: SortInPlaceElementTypeMap = {
   u32: {
     type: 'u32',
-    comp: {
-      code: 'fn _lt(left: u32, right: u32) -> bool { return left < right; }',
-      entryPoint: '_lt',
-    },
+    comp: { code: numericScalarLt('u32'), entryPoint: '_lt' },
   },
   i32: {
     type: 'i32',
-    comp: {
-      code: 'fn _lt(left: i32, right: i32) -> bool { return left < right; }',
-      entryPoint: '_lt',
-    },
+    comp: { code: numericScalarLt('i32'), entryPoint: '_lt' },
   },
   f32: {
     type: 'f32',
-    comp: {
-      code: 'fn _lt(left: f32, right: f32) -> bool { return left < right; }',
-      entryPoint: '_lt',
-    },
+    comp: { code: numericScalarLt('f32'), entryPoint: '_lt' },
+  },
+  vec2u: {
+    type: 'vec2u',
+    comp: { code: numericVectorLt('vec2u', 2), entryPoint: '_lt' },
+  },
+  vec3u: {
+    type: 'vec3u',
+    comp: { code: numericVectorLt('vec3u', 3), entryPoint: '_lt' },
+  },
+  vec4u: {
+    type: 'vec4u',
+    comp: { code: numericVectorLt('vec4u', 4), entryPoint: '_lt' },
+  },
+  vec2i: {
+    type: 'vec2i',
+    comp: { code: numericVectorLt('vec2i', 2), entryPoint: '_lt' },
+  },
+  vec3i: {
+    type: 'vec3i',
+    comp: { code: numericVectorLt('vec3i', 3), entryPoint: '_lt' },
+  },
+  vec4i: {
+    type: 'vec4i',
+    comp: { code: numericVectorLt('vec4i', 4), entryPoint: '_lt' },
+  },
+  vec2f: {
+    type: 'vec2f',
+    comp: { code: numericVectorLt('vec2f', 2), entryPoint: '_lt' },
+  },
+  vec3f: {
+    type: 'vec3f',
+    comp: { code: numericVectorLt('vec3f', 3), entryPoint: '_lt' },
+  },
+  vec4f: {
+    type: 'vec4f',
+    comp: { code: numericVectorLt('vec4f', 4), entryPoint: '_lt' },
   },
 } as const;
 
