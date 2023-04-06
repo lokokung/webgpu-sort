@@ -11,6 +11,8 @@ Open [`http://localhost:8080/standalone/sort.html`](http://localhost:8080/standa
 
 Open [`http://localhost:8080/standalone/tests.html`](http://localhost:8080/standalone/tests.html) to see/run the test suites.
 
+A build can also be triggered via `npm run build` which will build into `dist/0.x` and can be copied and used directly in other projects.
+
 ## Thanks
 
 - [WebGPU CTS repository](https://github.com/gpuweb/cts) where most of the test framework is copied
