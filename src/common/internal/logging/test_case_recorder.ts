@@ -1,6 +1,7 @@
 import { SkipTestCase, UnexpectedPassError } from '../../framework/fixture.js';
 import { globalTestConfig } from '../../framework/test_config.js';
-import { now, assert } from '../../util/util.js';
+import { assert } from '../../util/util.js';
+import { now } from '../../util/performance.js'
 
 import { LogMessageWithStack } from './log_message.js';
 import { Expectation, LiveTestCaseResult } from './result.js';

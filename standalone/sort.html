@@ -23,7 +23,11 @@
         visualizeColors,
         visualizeIndex,
       } from '../out/demos/sort.js';
-      import { sortIndices, SortInPlaceElementType, sortInPlace } from '../out/sort.js';
+      import {
+        createIndexSorter,
+        createInPlaceSorter,
+        SortInPlaceElementType,
+      } from '../out/sort.js';
 
       const kNumElements = 512;
 
@@ -67,9 +71,13 @@
       sortedContext.canvas.width = kNumElements;
       sortedContext.canvas.height = kNumElements;
       sortedContext.configure({ device, format: navigator.gpu.getPreferredCanvasFormat() });
-      sortInPlace(SortInPlaceElementType.u32, device, kNumElements, buffer);
-      // const sorter = createInPlaceSorter('u32');
-      // sorter.sort(device, buffer, kNumElements);
+      const inPlaceSorter = createInPlaceSorter({
+        device,
+        type: SortInPlaceElementType.u32,
+        n: kNumElements,
+        buffer,
+      });
+      inPlaceSorter.sort();
       visualize(device, buffer, sortedContext.getCurrentTexture());
 
       // Sort using indices.
@@ -79,8 +87,9 @@
       indexSortedContext.canvas.width = kNumElements;
       indexSortedContext.canvas.height = kNumElements;
       indexSortedContext.configure({ device, format: navigator.gpu.getPreferredCanvasFormat() });
-      const indices = sortIndices(
-        {
+      const indexSorter = createIndexSorter({
+        device,
+        type: {
           type: 'u32',
           dist: {
             code: 'fn _dist(x: u32) -> f32 { return f32(x); }',
@@ -88,10 +97,10 @@
             distType: SortInPlaceElementType.f32,
           },
         },
-        device,
-        kNumElements,
-        buffer2
-      );
+        n: kNumElements,
+        buffer: buffer2,
+      });
+      const indices = indexSorter.sort();
       visualizeIndex(device, buffer2, indices, indexSortedContext.getCurrentTexture());
 
       // Generate and visualize colors.
@@ -111,8 +120,9 @@
       sortedColorContext.configure({ device, format: navigator.gpu.getPreferredCanvasFormat() });
       sortedColorContext.canvas.width = kNumColors;
       sortedColorContext.canvas.height = 64;
-      sortInPlace(
-        {
+      const colorInPlaceSorter = createInPlaceSorter({
+        device,
+        type: {
           type: 'vec4f',
           comp: {
             code: `
@@ -171,10 +181,10 @@
             entryPoint: '_lt',
           },
         },
-        device,
-        kNumColors,
-        colorBuffer
-      );
+        n: kNumColors,
+        buffer: colorBuffer,
+      });
+      colorInPlaceSorter.sort();
       visualizeColors(device, colorBuffer, sortedColorContext.getCurrentTexture());
     </script>
   </body>

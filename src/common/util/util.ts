@@ -1,30 +1,4 @@
-import { SkipTestCase } from '../framework/fixture.js';
-import { Logger } from '../internal/logging/logger.js';
 import { keysOf } from './data_tables.js';
-
-/**
- * Error with arbitrary `extra` data attached, for debugging.
- * The extra data is omitted if not running the test in debug mode (`?debug=1`).
- */
-export class ErrorWithExtra extends Error {
-  readonly extra: { [k: string]: unknown };
-
-  /**
-   * `extra` function is only called if in debug mode.
-   * If an `ErrorWithExtra` is passed, its message is used and its extras are passed through.
-   */
-  constructor(message: string, extra: () => {});
-  constructor(base: ErrorWithExtra, newExtra: () => {});
-  constructor(baseOrMessage: string | ErrorWithExtra, newExtra: () => {}) {
-    const message = typeof baseOrMessage === 'string' ? baseOrMessage : baseOrMessage.message;
-    super(message);
-
-    const oldExtras = baseOrMessage instanceof ErrorWithExtra ? baseOrMessage.extra : {};
-    this.extra = Logger.globalDebugMode
-      ? { ...oldExtras, ...newExtra() }
-      : { omitted: 'pass ?debug=1' };
-  }
-}
 
 /**
  * Asserts `condition` is true. Otherwise, throws an `Error` with the provided message.
@@ -60,26 +34,6 @@ export async function assertReject(p: Promise<unknown>, msg?: string): Promise<v
  */
 export function unreachable(msg?: string): never {
   throw new Error(msg);
-}
-
-/**
- * Throw a `SkipTestCase` exception, which skips the test case.
- */
-export function skipTestCase(msg: string): never {
-  throw new SkipTestCase(msg);
-}
-
-/**
- * The `performance` interface.
- * It is available in all browsers, but it is not in scope by default in Node.
- */
-const perf = typeof performance !== 'undefined' ? performance : require('perf_hooks').performance;
-
-/**
- * Calls the appropriate `performance.now()` depending on whether running in a browser or Node.
- */
-export function now(): number {
-  return perf.now();
 }
 
 /**

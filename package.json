@@ -2,16 +2,19 @@
   "name": "webgpu-sort",
   "version": "0.0.1",
   "scripts": {
-    "build": "tsc --build",
+    "build": "rollup -c --bundleConfigAsCjs",
     "start": "node tools/dev_server"
   },
   "devDependencies": {
     "@babel/core": "^7.21.3",
     "@babel/preset-typescript": "^7.21.0",
+    "@rollup/plugin-terser": "^0.4.0",
+    "@rollup/plugin-typescript": "^11.1.0",
     "@types/babel__core": "^7.20.0",
     "@types/express": "^4.17.17",
     "@types/jquery": "^3.5.16",
     "@types/morgan": "^1.9.4",
+    "@types/node": "^18.15.11",
     "@types/serve-index": "^1.9.1",
     "@webgpu/types": "gpuweb/types#e836ed695b7a8774da4cdee0787b24011992400d",
     "babel-plugin-add-header-comment": "^1.0.3",
@@ -24,6 +27,7 @@
     "portfinder": "^1.0.32",
     "serve-index": "^1.9.1",
     "ts-node": "^10.9.1",
+    "tslib": "^2.5.0",
     "typescript": "^5.0.2"
   }
 }

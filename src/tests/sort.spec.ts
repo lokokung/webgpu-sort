@@ -6,7 +6,7 @@ import { Fixture } from '../common/framework/fixture.js';
 import { makeTestGroup } from '../common/framework/test_group.js';
 import { getGPU } from '../common/util/navigator_gpu.js';
 import { TypedArrayBufferView, assert, unreachable } from '../common/util/util.js';
-import { SortInPlaceElementType, SortMode, sortInPlace } from '../sort.js';
+import { SortInPlaceElementType, SortMode, createInPlaceSorter } from '../sort.js';
 import { makeBufferWithContents } from '../webgpu/util/buffer.js';
 
 export const g = makeTestGroup(Fixture);
@@ -97,7 +97,14 @@ g.test('inplace,scalars')
       GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
     );
     data.sort((a, b) => (mode === 'ascending' ? a - b : b - a));
-    sortInPlace(SortInPlaceElementType[type], device, size, buffer, mode);
+    const sorter = createInPlaceSorter({
+      device,
+      type: SortInPlaceElementType[type],
+      n: size,
+      mode,
+      buffer,
+    });
+    sorter.sort();
 
     // Copy the data to a readable buffer.
     const sorted = device.createBuffer({
@@ -168,7 +175,14 @@ g.test('inplace,vectors')
       data,
       GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC
     );
-    sortInPlace(SortInPlaceElementType[type], device, size, buffer, mode);
+    const sorter = createInPlaceSorter({
+      device,
+      type: SortInPlaceElementType[type],
+      n: size,
+      mode,
+      buffer,
+    });
+    sorter.sort();
 
     // Copy the data to a readable buffer.
     const sorted = device.createBuffer({
@@ -227,9 +241,9 @@ g.test('inplace,vectors')
 
     // Sorting the vectors in javascript by converting them into an array of arrays.
     function sortAsVec() {
-      var expected = [];
+      var expected: number[][] = [];
       for (var i = 0; i < size; i++) {
-        var vec = [];
+        var vec: number[] = [];
         for (var j = 0; j < vecSize; j++) {
           vec.push(data[i * alignSize + j]);
         }

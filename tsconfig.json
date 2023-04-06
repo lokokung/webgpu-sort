@@ -16,17 +16,5 @@
     "target": "es2020",
     "types": ["@webgpu/types", "jquery"]
   },
-  "include": ["src/**/*.ts"],
-  "typedocOptions": {
-    "entryPointStrategy": "expand",
-    "entryPoints": ["src/"],
-    "excludeInternal": true,
-    "excludeProtected": true,
-    "excludePrivate": true,
-    "validation": {
-      "invalidLink": true,
-      "notExported": false
-    },
-    "out": "docs/tsdoc/"
-  }
+  "files": ["src/sort.ts"],
 }

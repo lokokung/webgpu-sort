@@ -62,7 +62,7 @@ function numericVectorLt(type: string, n: number) {
       }
     }
     return false;
-  }`
+  }`;
 }
 export const SortInPlaceElementType: SortInPlaceElementTypeMap = {
   u32: {
@@ -115,10 +115,58 @@ export const SortInPlaceElementType: SortInPlaceElementTypeMap = {
   },
 } as const;
 
+export interface InPlaceSorter {
+  /** Encodes the sort into the given encoder in it's own pass(es). */
+  encode(encoder: GPUCommandEncoder): void;
+  /** Encodes and submits the sort commands in a new encoder. */
+  sort(): void;
+  /** Destroys this sorter and any internal resources that it requires. */
+  destroy(): void;
+}
+
+export interface InPlaceSorterConfig {
+  /** The GPU device. */
+  device: GPUDevice;
+  /** The type of data to sort. */
+  type: SortInPlaceElementType;
+  /** The number of elements expected in the buffer. */
+  n: number;
+  /** The sort mode of the sorter, defaults to ascending if not specified. */
+  mode?: SortMode;
+  /** Holds the data to be sorted. */
+  buffer: GPUBuffer;
+}
+
 /** Index sort element types definition. */
 export interface SortIndexElementType extends ElementType {
   /** Distance function used to key the values into a in-place sortable type. */
   dist: WGSLDistanceFunction;
+}
+
+export interface IndexSorter {
+  /** Encodes the sort into the given encoder in it's own pass(es). */
+  encode(encoder: GPUCommandEncoder): void;
+  /** Encodes and submits the sort commands in a new encoder and returns the indices. */
+  sort(): GPUBuffer;
+  /** Destroys this sorter and any internal resources that it requires. */
+  destroy(): void;
+}
+
+export interface IndexSorterConfig {
+  /** The GPU device. */
+  device: GPUDevice;
+  /** The type of data to sort. */
+  type: SortIndexElementType;
+  /** The number of elements expected in the buffer. */
+  n: number;
+  /** The sort mode of the sorter, defaults to ascending if not specified. */
+  mode?: SortMode;
+  /** Holds the raw data. */
+  buffer: GPUBuffer;
+  /** Holds the computed distance values. Optional and will be created if not provided. */
+  k?: GPUBuffer;
+  /** Holds the sorted indices. Optional and will be created if not provided. */
+  v?: GPUBuffer;
 }
 
 function computeSizeOfElement(elemType: ElementType): number {
@@ -331,12 +379,20 @@ function createDistanceMapShader(type: SortIndexElementType, wgs: number, n: num
   `;
 }
 
-function distanceMap(
+function initDistanceMap(
   type: SortIndexElementType,
   device: GPUDevice,
   n: number,
-  input: GPUBuffer
-): { k: GPUBuffer; v: GPUBuffer } {
+  buffer: GPUBuffer,
+  k?: GPUBuffer,
+  v?: GPUBuffer
+): {
+  computePipeline: GPUComputePipeline;
+  workGroupCount: number;
+  bindGroup: GPUBindGroup;
+  k?: GPUBuffer;
+  v?: GPUBuffer;
+} {
   const alignedN: number = nextPowerOfTwo(n);
   const workGroupSize: number = Math.min(device.limits.maxComputeWorkgroupSizeX, alignedN);
   const workGroupCount: number = alignedN / workGroupSize;
@@ -347,7 +403,7 @@ function distanceMap(
   });
 
   // Create the compute pipeline needed.
-  const pipeline = device.createComputePipeline({
+  const computePipeline = device.createComputePipeline({
     layout: 'auto',
     compute: {
       module: shader,
@@ -355,44 +411,57 @@ function distanceMap(
     },
   });
 
-  // Create the output buffers
-  const k = device.createBuffer({
-    size: 4 * n,
-    usage: GPUBufferUsage.STORAGE,
-  });
-  const v = device.createBuffer({
-    size: 4 * n,
-    usage: input.usage,
-  });
+  // Create output buffers as needed.
+  const keys =
+    k ??
+    device.createBuffer({
+      size: 4 * n,
+      usage: buffer.usage,
+    });
+  const values =
+    v ??
+    device.createBuffer({
+      size: 4 * n,
+      usage: buffer.usage,
+    });
 
   // Create the bind group.
   const bindGroup = device.createBindGroup({
-    layout: pipeline.getBindGroupLayout(0),
+    layout: computePipeline.getBindGroupLayout(0),
     entries: [
-      { binding: 0, resource: { buffer: input } },
-      { binding: 1, resource: { buffer: k } },
-      { binding: 2, resource: { buffer: v } },
+      { binding: 0, resource: { buffer: buffer } },
+      { binding: 1, resource: { buffer: keys } },
+      { binding: 2, resource: { buffer: values } },
     ],
   });
-
-  const encoder = device.createCommandEncoder();
-  const pass = encoder.beginComputePass();
-  pass.setPipeline(pipeline);
-  pass.setBindGroup(0, bindGroup);
-  pass.dispatchWorkgroups(workGroupCount);
-  pass.end();
-  device.queue.submit([encoder.finish()]);
-  return { k, v };
+  return {
+    computePipeline,
+    workGroupCount,
+    bindGroup,
+    k: !!k ? undefined : keys,
+    v: !!v ? undefined : values,
+  };
 }
 
-function sortKeyValueInPlace(
+function initKeyValueInPlaceSort(
   type: SortInPlaceElementType,
   mode: SortMode,
   device: GPUDevice,
   n: number,
   k: GPUBuffer,
   v?: GPUBuffer
-): void {
+): {
+  /** The compute pipeline for the in place sort. */
+  computePipeline: GPUComputePipeline;
+  /** The work group count. */
+  workGroupCount: number;
+  /** The common input bindgroup that consists. */
+  bindGroupKV: GPUBindGroup;
+  /** List of parameter bind groups for each dispatch call. */
+  bindGroupPs: GPUBindGroup[];
+  /** List of the parameter buffers in the parameter bind groups. */
+  paramBuffers: GPUBuffer[];
+} {
   const alignedN: number = nextPowerOfTwo(n);
   const elemSize: number = computeSizeOfElement(type);
   // We need to make sure that we do not over allocate workgroup memory depending on the size of
@@ -412,7 +481,7 @@ function sortKeyValueInPlace(
   });
 
   // Create the compute pipeline needed.
-  const pipeline = device.createComputePipeline({
+  const computePipeline = device.createComputePipeline({
     layout: 'auto',
     compute: {
       module: shader,
@@ -420,12 +489,8 @@ function sortKeyValueInPlace(
     },
   });
 
-  const encoder = device.createCommandEncoder();
-  const pass = encoder.beginComputePass();
-  pass.setPipeline(pipeline);
-
   const bindGroupKV = device.createBindGroup({
-    layout: pipeline.getBindGroupLayout(0),
+    layout: computePipeline.getBindGroupLayout(0),
     entries: [
       {
         binding: 0,
@@ -434,9 +499,9 @@ function sortKeyValueInPlace(
       ...(v ? [{ binding: 1, resource: { buffer: v } }] : []),
     ],
   });
-  pass.setBindGroup(0, bindGroupKV);
 
   const paramBuffers: GPUBuffer[] = [];
+  const bindGroupPs: GPUBindGroup[] = [];
   let helper = (h: number, algorithm: number) => {
     const params: GPUBuffer = makeBufferWithContents(
       device,
@@ -446,7 +511,7 @@ function sortKeyValueInPlace(
     paramBuffers.push(params);
 
     const bindGroupP = device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(1),
+      layout: computePipeline.getBindGroupLayout(1),
       entries: [
         {
           binding: 0,
@@ -454,9 +519,7 @@ function sortKeyValueInPlace(
         },
       ],
     });
-
-    pass.setBindGroup(1, bindGroupP);
-    pass.dispatchWorkgroups(workGroupCount);
+    bindGroupPs.push(bindGroupP);
   };
   let local_bms = (h: number) => {
     helper(h, 0);
@@ -485,31 +548,97 @@ function sortKeyValueInPlace(
     }
   }
 
-  pass.end();
-  device.queue.submit([encoder.finish()]);
-  paramBuffers.forEach(b => b.destroy());
+  return { computePipeline, workGroupCount, bindGroupKV, bindGroupPs, paramBuffers };
 }
 
-export function sortInPlace(
-  type: SortInPlaceElementType,
-  device: GPUDevice,
-  n: number,
-  buffer: GPUBuffer,
-  mode: SortMode = 'ascending'
-) {
-  sortKeyValueInPlace(type, mode, device, n, buffer);
+export function createInPlaceSorter(config: InPlaceSorterConfig): InPlaceSorter {
+  return new (class Sorter implements InPlaceSorter {
+    // Internals that can be reused on each sort for this sorter.
+    #internals = initKeyValueInPlaceSort(
+      config.type,
+      config.mode ?? 'ascending',
+      config.device,
+      config.n,
+      config.buffer
+    );
+
+    public encode(encoder: GPUCommandEncoder): void {
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(this.#internals.computePipeline);
+      pass.setBindGroup(0, this.#internals.bindGroupKV);
+      this.#internals.bindGroupPs.forEach((bg: GPUBindGroup) => {
+        pass.setBindGroup(1, bg);
+        pass.dispatchWorkgroups(this.#internals.workGroupCount);
+      });
+      pass.end();
+    }
+
+    sort(): void {
+      const encoder = config.device.createCommandEncoder();
+      this.encode(encoder);
+      config.device.queue.submit([encoder.finish()]);
+    }
+
+    destroy(): void {
+      this.#internals.paramBuffers.forEach((b: GPUBuffer) => b.destroy());
+    }
+  })();
 }
 
-export function sortIndices(
-  type: SortIndexElementType,
-  device: GPUDevice,
-  n: number,
-  buffer: GPUBuffer,
-  mode: SortMode = 'ascending'
-): GPUBuffer {
-  // First we need to convert the input into key-value pairs of (distance, index).
-  const { k, v } = distanceMap(type, device, n, buffer);
-  sortKeyValueInPlace(type.dist.distType, mode, device, n, k, v);
-  k.destroy();
-  return v;
+export function createIndexSorter(config: IndexSorterConfig): IndexSorter {
+  // TODO: We should add some verifications here to make sure that the buffers work.
+  return new (class Sorter implements IndexSorter {
+    // Internals that can be reused on each sort for this sorter.
+    #distInternals = initDistanceMap(
+      config.type,
+      config.device,
+      config.n,
+      config.buffer,
+      config.k,
+      config.v
+    );
+    #sortInternals = initKeyValueInPlaceSort(
+      config.type.dist.distType,
+      config.mode ?? 'ascending',
+      config.device,
+      config.n,
+      config.k ?? this.#distInternals.k!,
+      config.v ?? this.#distInternals.v!
+    );
+
+    public encode(encoder: GPUCommandEncoder): void {
+      // First do the distance map.
+      {
+        const pass = encoder.beginComputePass();
+        pass.setPipeline(this.#distInternals.computePipeline);
+        pass.setBindGroup(0, this.#distInternals.bindGroup);
+        pass.dispatchWorkgroups(this.#distInternals.workGroupCount);
+        pass.end();
+      }
+      // Then do the sorting.
+      {
+        const pass = encoder.beginComputePass();
+        pass.setPipeline(this.#sortInternals.computePipeline);
+        pass.setBindGroup(0, this.#sortInternals.bindGroupKV);
+        this.#sortInternals.bindGroupPs.forEach((bg: GPUBindGroup) => {
+          pass.setBindGroup(1, bg);
+          pass.dispatchWorkgroups(this.#sortInternals.workGroupCount);
+        });
+        pass.end();
+      }
+    }
+
+    sort(): GPUBuffer {
+      const encoder = config.device.createCommandEncoder();
+      this.encode(encoder);
+      config.device.queue.submit([encoder.finish()]);
+      return config.v ?? this.#distInternals.v!;
+    }
+
+    destroy(): void {
+      this.#distInternals.k?.destroy();
+      this.#distInternals.v?.destroy();
+      this.#sortInternals.paramBuffers.forEach((b: GPUBuffer) => b.destroy());
+    }
+  })();
 }
