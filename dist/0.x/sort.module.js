@@ -20,6 +20,61 @@ function __classPrivateFieldGet(receiver, state, kind, f) {
     return kind === "m" ? f : kind === "a" ? f.call(receiver) : f ? f.value : state.get(receiver);
 }
 
+/**
+ * Asserts `condition` is true. Otherwise, throws an `Error` with the provided message.
+ */
+function assert(condition, msg) {
+    if (!condition) {
+        throw new Error(msg && (typeof msg === 'string' ? msg : msg()));
+    }
+}
+const TypedArrayBufferViewInstances = [
+    new Uint8Array(),
+    new Uint8ClampedArray(),
+    new Uint16Array(),
+    new Uint32Array(),
+    new Int8Array(),
+    new Int16Array(),
+    new Int32Array(),
+    new Float32Array(),
+    new Float64Array(),
+];
+const kTypedArrayBufferViews = {
+    ...(() => {
+        /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
+        const result = {};
+        for (const v of TypedArrayBufferViewInstances) {
+            result[v.constructor.name] = v.constructor;
+        }
+        return result;
+    })(),
+};
+Object.values(kTypedArrayBufferViews);
+function subarrayAsU8(buf, { start = 0, length }) {
+    if (buf instanceof ArrayBuffer) {
+        return new Uint8Array(buf, start, length);
+    }
+    else if (buf instanceof Uint8Array || buf instanceof Uint8ClampedArray) {
+        // Don't wrap in new views if we don't need to.
+        if (start === 0 && (length === undefined || length === buf.byteLength)) {
+            return buf;
+        }
+    }
+    const byteOffset = buf.byteOffset + start * buf.BYTES_PER_ELEMENT;
+    const byteLength = length !== undefined
+        ? length * buf.BYTES_PER_ELEMENT
+        : buf.byteLength - (byteOffset - buf.byteOffset);
+    return new Uint8Array(buf.buffer, byteOffset, byteLength);
+}
+/**
+ * Copy a range of bytes from one ArrayBuffer or TypedArray to another.
+ *
+ * `start`/`length` are in elements (or in bytes, if ArrayBuffer).
+ */
+function memcpy(src, dst) {
+    subarrayAsU8(dst.dst, dst).set(subarrayAsU8(src.src, src));
+}
+
 /* webgpu-utils@0.2.4, license MIT */
 /**
  * @class Node
@@ -2911,61 +2966,6 @@ function makeShaderDataDefinitions(code) {
     };
 }
 
-/**
- * Asserts `condition` is true. Otherwise, throws an `Error` with the provided message.
- */
-function assert(condition, msg) {
-    if (!condition) {
-        throw new Error(msg && (typeof msg === 'string' ? msg : msg()));
-    }
-}
-const TypedArrayBufferViewInstances = [
-    new Uint8Array(),
-    new Uint8ClampedArray(),
-    new Uint16Array(),
-    new Uint32Array(),
-    new Int8Array(),
-    new Int16Array(),
-    new Int32Array(),
-    new Float32Array(),
-    new Float64Array(),
-];
-const kTypedArrayBufferViews = {
-    ...(() => {
-        /* eslint-disable-next-line @typescript-eslint/no-explicit-any */
-        const result = {};
-        for (const v of TypedArrayBufferViewInstances) {
-            result[v.constructor.name] = v.constructor;
-        }
-        return result;
-    })(),
-};
-Object.values(kTypedArrayBufferViews);
-function subarrayAsU8(buf, { start = 0, length }) {
-    if (buf instanceof ArrayBuffer) {
-        return new Uint8Array(buf, start, length);
-    }
-    else if (buf instanceof Uint8Array || buf instanceof Uint8ClampedArray) {
-        // Don't wrap in new views if we don't need to.
-        if (start === 0 && (length === undefined || length === buf.byteLength)) {
-            return buf;
-        }
-    }
-    const byteOffset = buf.byteOffset + start * buf.BYTES_PER_ELEMENT;
-    const byteLength = length !== undefined
-        ? length * buf.BYTES_PER_ELEMENT
-        : buf.byteLength - (byteOffset - buf.byteOffset);
-    return new Uint8Array(buf.buffer, byteOffset, byteLength);
-}
-/**
- * Copy a range of bytes from one ArrayBuffer or TypedArray to another.
- *
- * `start`/`length` are in elements (or in bytes, if ArrayBuffer).
- */
-function memcpy(src, dst) {
-    subarrayAsU8(dst.dst, dst).set(subarrayAsU8(src.src, src));
-}
-
 /** Round `n` up to the next multiple of `alignment` (inclusive). */
 function roundUp(n, alignment) {
     assert(Number.isInteger(n) && n >= 0, 'n must be a non-negative integer');
@@ -3062,6 +3062,13 @@ function computeSizeOfElement(elemType) {
     const defs = makeShaderDataDefinitions(code);
     return defs.structs['Element'].size;
 }
+var BitonicPassAlgorithm;
+(function (BitonicPassAlgorithm) {
+    BitonicPassAlgorithm[BitonicPassAlgorithm["LocalBms"] = 0] = "LocalBms";
+    BitonicPassAlgorithm[BitonicPassAlgorithm["LocalDisperse"] = 1] = "LocalDisperse";
+    BitonicPassAlgorithm[BitonicPassAlgorithm["BigFlip"] = 2] = "BigFlip";
+    BitonicPassAlgorithm[BitonicPassAlgorithm["BigDisperse"] = 3] = "BigDisperse";
+})(BitonicPassAlgorithm || (BitonicPassAlgorithm = {}));
 function createSortKeyValueInPlaceShader(type, mode, wgs, n, kv_pairs = true) {
     return `
   struct Params {
@@ -3204,16 +3211,16 @@ function createSortKeyValueInPlaceShader(type, mode, wgs, n, kv_pairs = true) {
     }
 
     switch params.algorithm {
-      case 0: {
+      case ${BitonicPassAlgorithm.LocalBms}: {
         local_bms(t, params.h, offset);
       }
-      case 1: {
+      case ${BitonicPassAlgorithm.LocalDisperse}: {
         local_disperse(t, params.h, offset);
       }
-      case 2: {
+      case ${BitonicPassAlgorithm.BigFlip}: {
         big_flip(t_prime, params.h);
       }
-      case 3: {
+      case ${BitonicPassAlgorithm.BigDisperse}: {
         big_disperse(t_prime, params.h);
       }
       default: {}
@@ -3249,7 +3256,7 @@ function createDistanceMapShader(type, wgs, n) {
   }
   `;
 }
-function initDistanceMap(type, device, n, buffer, k, v) {
+function initDistanceMap(type, device, n, buffer, k, v, bindGroupLayouts = []) {
     const alignedN = nextPowerOfTwo(n);
     const workGroupSize = Math.min(device.limits.maxComputeWorkgroupSizeX, alignedN);
     const workGroupCount = alignedN / workGroupSize;
@@ -3257,18 +3264,41 @@ function initDistanceMap(type, device, n, buffer, k, v) {
     const shader = device.createShaderModule({
         code: createDistanceMapShader(type, workGroupSize, n),
     });
+    // Create the bind group layout.
+    const bindGroupLayout = device.createBindGroupLayout({
+        entries: [
+            {
+                binding: 0,
+                visibility: GPUShaderStage.COMPUTE,
+                buffer: { type: 'read-only-storage' },
+            },
+            {
+                binding: 1,
+                visibility: GPUShaderStage.COMPUTE,
+                buffer: { type: 'storage' },
+            },
+            {
+                binding: 2,
+                visibility: GPUShaderStage.COMPUTE,
+                buffer: { type: 'storage' },
+            },
+        ],
+    });
     // Create the compute pipeline needed.
     const computePipeline = device.createComputePipeline({
-        layout: 'auto',
+        layout: device.createPipelineLayout({
+            bindGroupLayouts: [bindGroupLayout, ...bindGroupLayouts],
+        }),
         compute: {
             module: shader,
             entryPoint: 'main',
         },
     });
     // Create output buffers as needed.
+    const keySize = computeSizeOfElement(type.dist.distType);
     const keys = k ??
         device.createBuffer({
-            size: 4 * n,
+            size: keySize * n,
             usage: buffer.usage,
         });
     const values = v ??
@@ -3325,7 +3355,7 @@ function initKeyValueInPlaceSort(type, mode, device, n, k, v) {
     });
     const paramBuffers = [];
     const bindGroupPs = [];
-    let helper = (h, algorithm) => {
+    let bitonicPass = (h, algorithm) => {
         const params = makeBufferWithContents(device, new Uint32Array([h, algorithm]), GPUBufferUsage.UNIFORM);
         paramBuffers.push(params);
         const bindGroupP = device.createBindGroup({
@@ -3339,29 +3369,17 @@ function initKeyValueInPlaceSort(type, mode, device, n, k, v) {
         });
         bindGroupPs.push(bindGroupP);
     };
-    let local_bms = (h) => {
-        helper(h, 0);
-    };
-    let local_disperse = (h) => {
-        helper(h, 1);
-    };
-    let big_flip = (h) => {
-        helper(h, 2);
-    };
-    let big_disperse = (h) => {
-        helper(h, 3);
-    };
     let h = workGroupSize * 2;
-    local_bms(h);
+    bitonicPass(h, BitonicPassAlgorithm.LocalBms);
     h *= 2;
     for (; h <= alignedN; h *= 2) {
-        big_flip(h);
+        bitonicPass(h, BitonicPassAlgorithm.BigFlip);
         for (var hh = h / 2; hh > 1; hh /= 2) {
             if (hh <= workGroupCount) {
-                local_disperse(hh);
+                bitonicPass(hh, BitonicPassAlgorithm.LocalDisperse);
             }
             else {
-                big_disperse(hh);
+                bitonicPass(hh, BitonicPassAlgorithm.BigDisperse);
             }
         }
     }
@@ -3398,11 +3416,19 @@ function createInPlaceSorter(config) {
 }
 function createIndexSorter(config) {
     var _Sorter_distInternals, _Sorter_sortInternals, _a;
-    // TODO: We should add some verifications here to make sure that the buffers work.
+    // TODO: We should add some more verifications here to make sure that the buffers work.
+    const bindGroups = config.bindGroups ?? [];
+    // Sort the extra bind groups before iterating and making sure that they are > 0 and increasing.
+    bindGroups.sort((a, b) => {
+        return a.index - b.index;
+    });
+    for (var i = 0; i < bindGroups.length; i++) {
+        assert(bindGroups[i].index === i + 1, 'Additional bind groups must be consecutive starting from 1 since 0 is reserved.');
+    }
     return new (_a = class Sorter {
             constructor() {
                 // Internals that can be reused on each sort for this sorter.
-                _Sorter_distInternals.set(this, initDistanceMap(config.type, config.device, config.n, config.buffer, config.k, config.v));
+                _Sorter_distInternals.set(this, initDistanceMap(config.type, config.device, config.n, config.buffer, config.k, config.v, bindGroups.map(x => x.bindGroupLayout)));
                 _Sorter_sortInternals.set(this, initKeyValueInPlaceSort(config.type.dist.distType, config.mode ?? 'ascending', config.device, config.n, config.k ?? __classPrivateFieldGet(this, _Sorter_distInternals, "f").k, config.v ?? __classPrivateFieldGet(this, _Sorter_distInternals, "f").v));
             }
             encode(encoder) {
@@ -3411,6 +3437,9 @@ function createIndexSorter(config) {
                     const pass = encoder.beginComputePass();
                     pass.setPipeline(__classPrivateFieldGet(this, _Sorter_distInternals, "f").computePipeline);
                     pass.setBindGroup(0, __classPrivateFieldGet(this, _Sorter_distInternals, "f").bindGroup);
+                    bindGroups.forEach(({ index, bindGroup }) => {
+                        pass.setBindGroup(index, bindGroup);
+                    });
                     pass.dispatchWorkgroups(__classPrivateFieldGet(this, _Sorter_distInternals, "f").workGroupCount);
                     pass.end();
                 }

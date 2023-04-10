@@ -1,4 +1,3 @@
-import terser from '@rollup/plugin-terser';
 import typescript from '@rollup/plugin-typescript';
 import fs from 'fs';
 
@@ -21,34 +20,5 @@ export default [
             },
         ],
         plugins,
-    },
-    {
-        input: 'src/sort.ts',
-        output: [
-            {
-                name: 'webgpuSort',
-                file: 'dist/0.x/sort.js',
-                format: 'umd',
-                sourcemap: true,
-                banner,
-            },
-        ],
-        plugins,
-    },
-    {
-        input: 'src/sort.ts',
-        output: [
-            {
-                name: 'webgpuSort',
-                file: 'dist/0.x/sort.min.js',
-                format: 'umd',
-                sourcemap: true,
-                banner,
-            },
-        ],
-        plugins: [
-            ...plugins,
-            terser(),
-        ],
-    },
+    }
 ];

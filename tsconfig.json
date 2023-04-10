@@ -2,6 +2,7 @@
   "extends": "./node_modules/gts/tsconfig-google.json",
   "compilerOptions": {
     "lib": ["dom", "es2020"],
+    "declaration": true,
     "module": "esnext",
     "outDir": "./out",
     "allowJs": true,
@@ -16,5 +17,5 @@
     "target": "es2020",
     "types": ["@webgpu/types", "jquery"]
   },
-  "files": ["src/sort.ts"],
+  "files": ["src/sort.ts"]
 }

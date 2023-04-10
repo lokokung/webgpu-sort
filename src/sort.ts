@@ -1,3 +1,4 @@
+import { assert } from './common/util/util.js';
 import { makeShaderDataDefinitions } from './external/greggman/webgpu-utils/webgpu-utils.module.js';
 import { makeBufferWithContents } from './webgpu/util/buffer.js';
 import { nextPowerOfTwo } from './webgpu/util/math.js';
@@ -167,6 +168,9 @@ export interface IndexSorterConfig {
   k?: GPUBuffer;
   /** Holds the sorted indices. Optional and will be created if not provided. */
   v?: GPUBuffer;
+  /** Additional bind groups that may be needed for the distance function. Note that bind group 0
+   *  is reserved and cannot be used here. */
+  bindGroups?: { index: number; bindGroupLayout: GPUBindGroupLayout; bindGroup: GPUBindGroup }[];
 }
 
 function computeSizeOfElement(elemType: ElementType): number {
@@ -178,6 +182,13 @@ function computeSizeOfElement(elemType: ElementType): number {
   `;
   const defs = makeShaderDataDefinitions(code);
   return defs.structs['Element'].size;
+}
+
+enum BitonicPassAlgorithm {
+  LocalBms = 0,
+  LocalDisperse,
+  BigFlip,
+  BigDisperse
 }
 
 function createSortKeyValueInPlaceShader(
@@ -332,16 +343,16 @@ function createSortKeyValueInPlaceShader(
     }
 
     switch params.algorithm {
-      case 0: {
+      case ${BitonicPassAlgorithm.LocalBms}: {
         local_bms(t, params.h, offset);
       }
-      case 1: {
+      case ${BitonicPassAlgorithm.LocalDisperse}: {
         local_disperse(t, params.h, offset);
       }
-      case 2: {
+      case ${BitonicPassAlgorithm.BigFlip}: {
         big_flip(t_prime, params.h);
       }
-      case 3: {
+      case ${BitonicPassAlgorithm.BigDisperse}: {
         big_disperse(t_prime, params.h);
       }
       default: {}
@@ -385,7 +396,8 @@ function initDistanceMap(
   n: number,
   buffer: GPUBuffer,
   k?: GPUBuffer,
-  v?: GPUBuffer
+  v?: GPUBuffer,
+  bindGroupLayouts: GPUBindGroupLayout[] = []
 ): {
   computePipeline: GPUComputePipeline;
   workGroupCount: number;
@@ -402,9 +414,32 @@ function initDistanceMap(
     code: createDistanceMapShader(type, workGroupSize, n),
   });
 
+  // Create the bind group layout.
+  const bindGroupLayout = device.createBindGroupLayout({
+    entries: [
+      {
+        binding: 0,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: 'read-only-storage' },
+      },
+      {
+        binding: 1,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: 'storage' },
+      },
+      {
+        binding: 2,
+        visibility: GPUShaderStage.COMPUTE,
+        buffer: { type: 'storage' },
+      },
+    ],
+  });
+
   // Create the compute pipeline needed.
   const computePipeline = device.createComputePipeline({
-    layout: 'auto',
+    layout: device.createPipelineLayout({
+      bindGroupLayouts: [bindGroupLayout, ...bindGroupLayouts],
+    }),
     compute: {
       module: shader,
       entryPoint: 'main',
@@ -412,10 +447,11 @@ function initDistanceMap(
   });
 
   // Create output buffers as needed.
+  const keySize = computeSizeOfElement(type.dist.distType);
   const keys =
     k ??
     device.createBuffer({
-      size: 4 * n,
+      size: keySize * n,
       usage: buffer.usage,
     });
   const values =
@@ -502,7 +538,7 @@ function initKeyValueInPlaceSort(
 
   const paramBuffers: GPUBuffer[] = [];
   const bindGroupPs: GPUBindGroup[] = [];
-  let helper = (h: number, algorithm: number) => {
+  let bitonicPass = (h: number, algorithm: BitonicPassAlgorithm) => {
     const params: GPUBuffer = makeBufferWithContents(
       device,
       new Uint32Array([h, algorithm]),
@@ -521,29 +557,17 @@ function initKeyValueInPlaceSort(
     });
     bindGroupPs.push(bindGroupP);
   };
-  let local_bms = (h: number) => {
-    helper(h, 0);
-  };
-  let local_disperse = (h: number) => {
-    helper(h, 1);
-  };
-  let big_flip = (h: number) => {
-    helper(h, 2);
-  };
-  let big_disperse = (h: number) => {
-    helper(h, 3);
-  };
 
   let h = workGroupSize * 2;
-  local_bms(h);
+  bitonicPass(h, BitonicPassAlgorithm.LocalBms);
   h *= 2;
   for (; h <= alignedN; h *= 2) {
-    big_flip(h);
+    bitonicPass(h, BitonicPassAlgorithm.BigFlip);
     for (var hh = h / 2; hh > 1; hh /= 2) {
       if (hh <= workGroupCount) {
-        local_disperse(hh);
+        bitonicPass(hh, BitonicPassAlgorithm.LocalDisperse);
       } else {
-        big_disperse(hh);
+        bitonicPass(hh, BitonicPassAlgorithm.BigDisperse);
       }
     }
   }
@@ -586,7 +610,20 @@ export function createInPlaceSorter(config: InPlaceSorterConfig): InPlaceSorter 
 }
 
 export function createIndexSorter(config: IndexSorterConfig): IndexSorter {
-  // TODO: We should add some verifications here to make sure that the buffers work.
+  // TODO: We should add some more verifications here to make sure that the buffers work.
+  const bindGroups = config.bindGroups ?? [];
+
+  // Sort the extra bind groups before iterating and making sure that they are > 0 and increasing.
+  bindGroups.sort((a, b) => {
+    return a.index - b.index;
+  });
+  for (var i = 0; i < bindGroups.length; i++) {
+    assert(
+      bindGroups[i].index === i + 1,
+      'Additional bind groups must be consecutive starting from 1 since 0 is reserved.'
+    );
+  }
+
   return new (class Sorter implements IndexSorter {
     // Internals that can be reused on each sort for this sorter.
     #distInternals = initDistanceMap(
@@ -595,7 +632,8 @@ export function createIndexSorter(config: IndexSorterConfig): IndexSorter {
       config.n,
       config.buffer,
       config.k,
-      config.v
+      config.v,
+      bindGroups.map(x => x.bindGroupLayout)
     );
     #sortInternals = initKeyValueInPlaceSort(
       config.type.dist.distType,
@@ -612,6 +650,9 @@ export function createIndexSorter(config: IndexSorterConfig): IndexSorter {
         const pass = encoder.beginComputePass();
         pass.setPipeline(this.#distInternals.computePipeline);
         pass.setBindGroup(0, this.#distInternals.bindGroup);
+        bindGroups.forEach(({ index, bindGroup }) => {
+          pass.setBindGroup(index, bindGroup);
+        });
         pass.dispatchWorkgroups(this.#distInternals.workGroupCount);
         pass.end();
       }
