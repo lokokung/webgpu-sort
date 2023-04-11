@@ -6,12 +6,12 @@ import { Fixture } from '../common/framework/fixture.js';
 import { makeTestGroup } from '../common/framework/test_group.js';
 import { getGPU } from '../common/util/navigator_gpu.js';
 import { TypedArrayBufferView, assert, unreachable } from '../common/util/util.js';
-import { SortInPlaceElementType, SortMode, createInPlaceSorter } from '../sort.js';
+import { ComparisonElementType, SortMode, createInPlaceSorter } from '../sort.js';
 import { makeBufferWithContents } from '../webgpu/util/buffer.js';
 
 export const g = makeTestGroup(Fixture);
 
-type NumericElementTypes = keyof typeof SortInPlaceElementType;
+type NumericElementTypes = keyof typeof ComparisonElementType;
 function generateUints(n: number) {
   return new Uint32Array(Array.from({ length: n }, () => Math.floor(Math.random() * 4294967295)));
 }
@@ -99,7 +99,7 @@ g.test('inplace,scalars')
     data.sort((a, b) => (mode === 'ascending' ? a - b : b - a));
     const sorter = createInPlaceSorter({
       device,
-      type: SortInPlaceElementType[type],
+      type: ComparisonElementType[type],
       n: size,
       mode,
       buffer,
@@ -140,7 +140,7 @@ g.test('inplace,scalars')
   });
 
 g.test('inplace,vectors')
-  .desc('Tests in-place, key only sorting of builtin types.')
+  .desc('Tests in-place, key only sorting of vector types.')
   .params(u =>
     u
       .combine('type', [
@@ -177,7 +177,7 @@ g.test('inplace,vectors')
     );
     const sorter = createInPlaceSorter({
       device,
-      type: SortInPlaceElementType[type],
+      type: ComparisonElementType[type],
       n: size,
       mode,
       buffer,

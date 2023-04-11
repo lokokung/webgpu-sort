@@ -26,7 +26,7 @@
       import {
         createIndexSorter,
         createInPlaceSorter,
-        SortInPlaceElementType,
+        ComparisonElementType,
       } from '../out/sort.js';
 
       const kNumElements = 512;
@@ -73,7 +73,7 @@
       sortedContext.configure({ device, format: navigator.gpu.getPreferredCanvasFormat() });
       const inPlaceSorter = createInPlaceSorter({
         device,
-        type: SortInPlaceElementType.u32,
+        type: ComparisonElementType.u32,
         n: kNumElements,
         buffer,
       });
@@ -94,7 +94,7 @@
           dist: {
             code: 'fn _dist(x: u32) -> f32 { return f32(x); }',
             entryPoint: '_dist',
-            distType: SortInPlaceElementType.f32,
+            distType: ComparisonElementType.f32,
           },
         },
         n: kNumElements,
@@ -124,7 +124,7 @@
         device,
         type: {
           type: 'vec4f',
-          comp: {
+          dist: {
             code: `
             fn _rgb_to_adjusted_hsv(c: vec4f) -> vec3u {
               // First just compute the normal HSV.
@@ -165,20 +165,9 @@
               }
 
               return vec3u(h2, lum2, v2);
-            }
-
-            fn _lt(left: vec4f, right: vec4f) -> bool {
-              let l = _rgb_to_adjusted_hsv(left);
-              let r = _rgb_to_adjusted_hsv(right);
-              if (l.x == r.x) {
-                if (l.y == r.y) {
-                  return l.z < r.z;
-                }
-                return l.y < r.y;
-              }
-              return l.x < r.x;
             }`,
-            entryPoint: '_lt',
+            entryPoint: '_rgb_to_adjusted_hsv',
+            distType: ComparisonElementType.vec3u,
           },
         },
         n: kNumColors,

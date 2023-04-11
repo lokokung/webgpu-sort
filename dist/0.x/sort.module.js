@@ -1,25 +1,4 @@
 /* webgpu-sort@0.0.1, license MIT */
-/******************************************************************************
-Copyright (c) Microsoft Corporation.
-
-Permission to use, copy, modify, and/or distribute this software for any
-purpose with or without fee is hereby granted.
-
-THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
-REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY
-AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
-INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM
-LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
-OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
-PERFORMANCE OF THIS SOFTWARE.
-***************************************************************************** */
-
-function __classPrivateFieldGet(receiver, state, kind, f) {
-    if (kind === "a" && !f) throw new TypeError("Private accessor was defined without a getter");
-    if (typeof state === "function" ? receiver !== state || !f : !state.has(receiver)) throw new TypeError("Cannot read private member from an object whose class did not declare it");
-    return kind === "m" ? f : kind === "a" ? f.call(receiver) : f ? f.value : state.get(receiver);
-}
-
 /**
  * Asserts `condition` is true. Otherwise, throws an `Error` with the provided message.
  */
@@ -2988,6 +2967,20 @@ function makeBufferWithContents(device, data, usage) {
     return buffer;
 }
 
+function reifyWGSLDistanceFunction(f) {
+    const bindGroups = f.bindGroups ?? [];
+    // Sort the extra bind groups and making sure that they are > 0 and increasing.
+    bindGroups.sort((a, b) => {
+        return a.index - b.index;
+    });
+    for (var i = 0; i < bindGroups.length; i++) {
+        assert(bindGroups[i].index === i + 1, 'Additional bind groups must be consecutive starting from 1 since 0 is reserved.');
+    }
+    return { ...f, distType: reifyComparisonElementType(f.distType), bindGroups };
+}
+function reifyComparisonElementType(e) {
+    return { ...e, size: computeSizeOfElement(e) };
+}
 function numericScalarLt(type) {
     return `fn _lt(l: ${type}, r: ${type}) -> bool { return l < r; }`;
 }
@@ -3002,7 +2995,7 @@ function numericVectorLt(type, n) {
     return false;
   }`;
 }
-const SortInPlaceElementType = {
+const ComparisonElementType = {
     u32: {
         type: 'u32',
         comp: { code: numericScalarLt('u32'), entryPoint: '_lt' },
@@ -3052,6 +3045,9 @@ const SortInPlaceElementType = {
         comp: { code: numericVectorLt('vec4f', 4), entryPoint: '_lt' },
     },
 };
+function reifyDistanceElementType(e) {
+    return { ...e, dist: reifyWGSLDistanceFunction(e.dist), size: computeSizeOfElement(e) };
+}
 function computeSizeOfElement(elemType) {
     const code = `
   ${!!elemType.definition ? elemType.definition : ''}
@@ -3069,26 +3065,29 @@ var BitonicPassAlgorithm;
     BitonicPassAlgorithm[BitonicPassAlgorithm["BigFlip"] = 2] = "BigFlip";
     BitonicPassAlgorithm[BitonicPassAlgorithm["BigDisperse"] = 3] = "BigDisperse";
 })(BitonicPassAlgorithm || (BitonicPassAlgorithm = {}));
-function createSortKeyValueInPlaceShader(type, mode, wgs, n, kv_pairs = true) {
+function createSortKeyValueInPlaceShader(keyType, mode, wgs, n, valueType) {
     return `
   struct Params {
     h: u32,
     algorithm: u32
   };
-  ${type.definition ? type.definition : ''}
+  ${keyType.definition ?? ''}
+  ${valueType?.definition ?? ''}
 
-  @group(0) @binding(0) var<storage, read_write> k: array<${type.type}>;
-  ${kv_pairs ? '@group(0) @binding(1) var<storage, read_write> v: array<u32>;' : ''}
+  @group(0) @binding(0) var<storage, read_write> k: array<${keyType.type}, ${n}>;
+  ${valueType
+        ? `@group(0) @binding(1) var<storage, read_write> v: array<${valueType.type}, ${n}>;`
+        : ''}
   @group(1) @binding(0) var<uniform> params: Params;
 
-  var<workgroup> local_k: array<${type.type}, ${wgs * 2}>;
-  ${kv_pairs ? `var<workgroup> local_v: array<u32, ${wgs * 2}>;` : ''}
+  var<workgroup> local_k: array<${keyType.type}, ${wgs * 2}>;
+  ${valueType ? `var<workgroup> local_v: array<${valueType.type}, ${wgs * 2}>;` : ''}
 
   // Comparison function.
-  ${type.comp.code}
+  ${keyType.comp.code}
 
-  fn _compare(left: ${type.type}, right: ${type.type}) -> bool {
-    return ${mode === 'ascending' ? '' : '!'}${type.comp.entryPoint}(left, right);
+  fn _compare(left: ${keyType.type}, right: ${keyType.type}) -> bool {
+    return ${mode === 'ascending' ? '' : '!'}${keyType.comp.entryPoint}(left, right);
   }
 
   fn global_compare_and_swap(idx: vec2u) {
@@ -3102,7 +3101,7 @@ function createSortKeyValueInPlaceShader(type, mode, wgs, n, kv_pairs = true) {
       k[idx.y] = tmp_k;
 
       // Conditionally swap the values as well.
-      ${kv_pairs
+      ${valueType
         ? `
       let tmp_v = v[idx.x];
       v[idx.x] = v[idx.y];
@@ -3123,7 +3122,7 @@ function createSortKeyValueInPlaceShader(type, mode, wgs, n, kv_pairs = true) {
       local_k[idx.y] = tmp_k;
 
       // Conditionally swap the values as well.
-      ${kv_pairs
+      ${valueType
         ? `
       let tmp_v = local_v[idx.x];
       local_v[idx.x] = local_v[idx.y];
@@ -3136,14 +3135,14 @@ function createSortKeyValueInPlaceShader(type, mode, wgs, n, kv_pairs = true) {
   fn local_init(offset: u32, i: u32) {
     if (offset + i < ${n}) {
       local_k[i] = k[offset + i];
-      ${kv_pairs ? `local_v[i] = v[offset + i];` : ''}
+      ${valueType ? `local_v[i] = v[offset + i];` : ''}
     }
   }
 
   fn local_flush(offset: u32, i: u32) {
     if (offset + i < ${n}) {
       k[offset + i] = local_k[i];
-      ${kv_pairs ? `v[offset + i] = local_v[i];` : ''}
+      ${valueType ? `v[offset + i] = local_v[i];` : ''}
     }
   }
 
@@ -3235,34 +3234,35 @@ function createSortKeyValueInPlaceShader(type, mode, wgs, n, kv_pairs = true) {
   }
   `;
 }
-function createDistanceMapShader(type, wgs, n) {
+function createDistanceMapShader(keyType, wgs, n, initIndices = false) {
     return `
   // Declare the custom struct type(s)
-  ${type.dist.distType.definition ? type.dist.distType.definition : ''}
-  ${type.definition ? type.definition : ''}
+  ${keyType.dist.distType.definition ?? ''}
+  ${keyType.definition ?? ''}
 
   // Declare the distance mapping function.
-  ${type.dist.code}
+  ${keyType.dist.code}
 
-  @group(0) @binding(0) var<storage, read> input: array<${type.type}, ${n}>;
-  @group(0) @binding(1) var<storage, read_write> k: array<${type.dist.distType.type}, ${n}>;
-  @group(0) @binding(2) var<storage, read_write> v: array<u32, ${n}>;
+  @group(0) @binding(0) var<storage, read> input: array<${keyType.type}, ${n}>;
+  @group(0) @binding(1) var<storage, read_write> distances: array<${keyType.dist.distType.type}, ${n}>;
+  ${initIndices ? `@group(0) @binding(2) var<storage, read_write> indices: array<u32, ${n}>;` : ''}
 
   @compute @workgroup_size(${wgs}) fn main(@builtin(global_invocation_id) i: vec3u) {
     if (i.x < ${n}) {
-      k[i.x] = ${type.dist.entryPoint}(input[i.x]);
-      v[i.x] = i.x;
+      distances[i.x] = ${keyType.dist.entryPoint}(input[i.x]);
+      ${initIndices ? 'indices[i.x] = i.x;' : ''}
     }
   }
   `;
 }
-function initDistanceMap(type, device, n, buffer, k, v, bindGroupLayouts = []) {
+function initDistanceMap(keyType, device, n, buffer, indices // Special case: this should only be passed for index sorting.
+) {
     const alignedN = nextPowerOfTwo(n);
     const workGroupSize = Math.min(device.limits.maxComputeWorkgroupSizeX, alignedN);
     const workGroupCount = alignedN / workGroupSize;
     // Create the shader.
     const shader = device.createShaderModule({
-        code: createDistanceMapShader(type, workGroupSize, n),
+        code: createDistanceMapShader(keyType, workGroupSize, n, !!indices),
     });
     // Create the bind group layout.
     const bindGroupLayout = device.createBindGroupLayout({
@@ -3277,63 +3277,60 @@ function initDistanceMap(type, device, n, buffer, k, v, bindGroupLayouts = []) {
                 visibility: GPUShaderStage.COMPUTE,
                 buffer: { type: 'storage' },
             },
-            {
-                binding: 2,
-                visibility: GPUShaderStage.COMPUTE,
-                buffer: { type: 'storage' },
-            },
+            ...(indices
+                ? [
+                    {
+                        binding: 2,
+                        visibility: GPUShaderStage.COMPUTE,
+                        buffer: { type: 'storage' },
+                    },
+                ]
+                : []),
         ],
     });
     // Create the compute pipeline needed.
     const computePipeline = device.createComputePipeline({
         layout: device.createPipelineLayout({
-            bindGroupLayouts: [bindGroupLayout, ...bindGroupLayouts],
+            bindGroupLayouts: [bindGroupLayout, ...keyType.dist.bindGroups.map(x => x.bindGroupLayout)],
         }),
         compute: {
             module: shader,
             entryPoint: 'main',
         },
     });
-    // Create output buffers as needed.
-    const keySize = computeSizeOfElement(type.dist.distType);
-    const keys = k ??
-        device.createBuffer({
-            size: keySize * n,
-            usage: buffer.usage,
-        });
-    const values = v ??
-        device.createBuffer({
-            size: 4 * n,
-            usage: buffer.usage,
-        });
+    // Create output buffer.
+    const distances = device.createBuffer({
+        size: keyType.dist.distType.size * n,
+        usage: buffer.usage,
+    });
     // Create the bind group.
     const bindGroup = device.createBindGroup({
         layout: computePipeline.getBindGroupLayout(0),
         entries: [
             { binding: 0, resource: { buffer: buffer } },
-            { binding: 1, resource: { buffer: keys } },
-            { binding: 2, resource: { buffer: values } },
+            { binding: 1, resource: { buffer: distances } },
+            ...(indices ? [{ binding: 2, resource: { buffer: indices } }] : []),
         ],
     });
     return {
         computePipeline,
         workGroupCount,
         bindGroup,
-        k: !!k ? undefined : keys,
-        v: !!v ? undefined : values,
+        distances,
     };
 }
-function initKeyValueInPlaceSort(type, mode, device, n, k, v) {
+function initKeyValueInPlaceSort(mode, device, n, keyType, k, valueType, v) {
     const alignedN = nextPowerOfTwo(n);
-    const elemSize = computeSizeOfElement(type);
     // We need to make sure that we do not over allocate workgroup memory depending on the size of
     // elements.
-    const maxWorkGroupSizeForMemory = device.limits.maxComputeWorkgroupStorageSize / 2 / nextPowerOfTwo(elemSize + (v ? 4 : 0));
+    const maxWorkGroupSizeForMemory = device.limits.maxComputeWorkgroupStorageSize /
+        2 /
+        nextPowerOfTwo(keyType.size + (valueType?.size ?? 0));
     const workGroupSize = Math.min(device.limits.maxComputeWorkgroupSizeX, maxWorkGroupSizeForMemory, alignedN / 2);
     const workGroupCount = alignedN / (workGroupSize * 2);
     // Create the shader.
     const shader = device.createShaderModule({
-        code: createSortKeyValueInPlaceShader(type, mode, workGroupSize, n, !!v),
+        code: createSortKeyValueInPlaceShader(keyType, mode, workGroupSize, n, valueType),
     });
     // Create the compute pipeline needed.
     const computePipeline = device.createComputePipeline({
@@ -3386,91 +3383,123 @@ function initKeyValueInPlaceSort(type, mode, device, n, k, v) {
     return { computePipeline, workGroupCount, bindGroupKV, bindGroupPs, paramBuffers };
 }
 function createInPlaceSorter(config) {
-    var _Sorter_internals, _a;
-    return new (_a = class Sorter {
-            constructor() {
-                // Internals that can be reused on each sort for this sorter.
-                _Sorter_internals.set(this, initKeyValueInPlaceSort(config.type, config.mode ?? 'ascending', config.device, config.n, config.buffer));
-            }
-            encode(encoder) {
+    var compType;
+    var distType;
+    if ('comp' in config.type) {
+        compType = reifyComparisonElementType(config.type);
+    }
+    if ('dist' in config.type) {
+        distType = reifyDistanceElementType(config.type);
+    }
+    assert(!!compType !== !!distType, 'Exactly one comparison or distance type must be specified.');
+    const keyType = compType ?? distType.dist.distType;
+    const valueType = !!distType ? distType : undefined;
+    // Initialize distance mapping if necessary.
+    const distInternals = distType
+        ? initDistanceMap(distType, config.device, config.n, config.buffer, undefined)
+        : undefined;
+    const keys = distInternals?.distances ?? config.buffer;
+    const values = !!distType ? config.buffer : undefined;
+    // Initialize sorting.
+    const sortInternals = initKeyValueInPlaceSort(config.mode ?? 'ascending', config.device, config.n, keyType, keys, valueType, values);
+    return new (class Sorter {
+        encode(encoder) {
+            // First do the distance mapping if necessary.
+            if (distInternals) {
                 const pass = encoder.beginComputePass();
-                pass.setPipeline(__classPrivateFieldGet(this, _Sorter_internals, "f").computePipeline);
-                pass.setBindGroup(0, __classPrivateFieldGet(this, _Sorter_internals, "f").bindGroupKV);
-                __classPrivateFieldGet(this, _Sorter_internals, "f").bindGroupPs.forEach((bg) => {
-                    pass.setBindGroup(1, bg);
-                    pass.dispatchWorkgroups(__classPrivateFieldGet(this, _Sorter_internals, "f").workGroupCount);
+                pass.setPipeline(distInternals.computePipeline);
+                pass.setBindGroup(0, distInternals.bindGroup);
+                distType.dist.bindGroups.forEach(({ index, bindGroup }) => {
+                    pass.setBindGroup(index, bindGroup);
                 });
+                pass.dispatchWorkgroups(distInternals.workGroupCount);
                 pass.end();
             }
-            sort() {
-                const encoder = config.device.createCommandEncoder();
-                this.encode(encoder);
-                config.device.queue.submit([encoder.finish()]);
-            }
-            destroy() {
-                __classPrivateFieldGet(this, _Sorter_internals, "f").paramBuffers.forEach((b) => b.destroy());
-            }
-        },
-        _Sorter_internals = new WeakMap(),
-        _a)();
+            // Then do the sort.
+            const pass = encoder.beginComputePass();
+            pass.setPipeline(sortInternals.computePipeline);
+            pass.setBindGroup(0, sortInternals.bindGroupKV);
+            sortInternals.bindGroupPs.forEach((bg) => {
+                pass.setBindGroup(1, bg);
+                pass.dispatchWorkgroups(sortInternals.workGroupCount);
+            });
+            pass.end();
+        }
+        sort() {
+            const encoder = config.device.createCommandEncoder();
+            this.encode(encoder);
+            config.device.queue.submit([encoder.finish()]);
+        }
+        destroy() {
+            sortInternals.paramBuffers.forEach((b) => b.destroy());
+            distInternals?.distances.destroy();
+        }
+    })();
 }
 function createIndexSorter(config) {
-    var _Sorter_distInternals, _Sorter_sortInternals, _a;
-    // TODO: We should add some more verifications here to make sure that the buffers work.
-    const bindGroups = config.bindGroups ?? [];
-    // Sort the extra bind groups before iterating and making sure that they are > 0 and increasing.
-    bindGroups.sort((a, b) => {
-        return a.index - b.index;
-    });
-    for (var i = 0; i < bindGroups.length; i++) {
-        assert(bindGroups[i].index === i + 1, 'Additional bind groups must be consecutive starting from 1 since 0 is reserved.');
+    var compType;
+    var distType;
+    if ('comp' in config.type) {
+        compType = reifyComparisonElementType(config.type);
     }
-    return new (_a = class Sorter {
-            constructor() {
-                // Internals that can be reused on each sort for this sorter.
-                _Sorter_distInternals.set(this, initDistanceMap(config.type, config.device, config.n, config.buffer, config.k, config.v, bindGroups.map(x => x.bindGroupLayout)));
-                _Sorter_sortInternals.set(this, initKeyValueInPlaceSort(config.type.dist.distType, config.mode ?? 'ascending', config.device, config.n, config.k ?? __classPrivateFieldGet(this, _Sorter_distInternals, "f").k, config.v ?? __classPrivateFieldGet(this, _Sorter_distInternals, "f").v));
+    if ('dist' in config.type) {
+        distType = reifyDistanceElementType(config.type);
+    }
+    assert(!!compType !== !!distType, 'Exactly one comparison or distance type must be specified.');
+    const keyType = compType ?? distType.dist.distType;
+    const valueType = reifyComparisonElementType(ComparisonElementType.u32);
+    // Create an output buffer for the indices if we were not passed one.
+    const indices = config.indices ??
+        config.device.createBuffer({
+            size: 4 * config.n,
+            usage: config.buffer.usage,
+        });
+    // Initialize distance mapping if necessary.
+    const distInternals = distType
+        ? initDistanceMap(distType, config.device, config.n, config.buffer, indices)
+        : undefined;
+    const keys = distInternals?.distances ?? config.buffer;
+    // Initialize sorting.
+    const sortInternals = initKeyValueInPlaceSort(config.mode ?? 'ascending', config.device, config.n, keyType, keys, valueType, indices);
+    return new (class Sorter {
+        encode(encoder) {
+            // First do the distance mapping if necessary.
+            if (distInternals) {
+                const pass = encoder.beginComputePass();
+                pass.setPipeline(distInternals.computePipeline);
+                pass.setBindGroup(0, distInternals.bindGroup);
+                distType.dist.bindGroups.forEach(({ index, bindGroup }) => {
+                    pass.setBindGroup(index, bindGroup);
+                });
+                pass.dispatchWorkgroups(distInternals.workGroupCount);
+                pass.end();
             }
-            encode(encoder) {
-                // First do the distance map.
-                {
-                    const pass = encoder.beginComputePass();
-                    pass.setPipeline(__classPrivateFieldGet(this, _Sorter_distInternals, "f").computePipeline);
-                    pass.setBindGroup(0, __classPrivateFieldGet(this, _Sorter_distInternals, "f").bindGroup);
-                    bindGroups.forEach(({ index, bindGroup }) => {
-                        pass.setBindGroup(index, bindGroup);
-                    });
-                    pass.dispatchWorkgroups(__classPrivateFieldGet(this, _Sorter_distInternals, "f").workGroupCount);
-                    pass.end();
-                }
-                // Then do the sorting.
-                {
-                    const pass = encoder.beginComputePass();
-                    pass.setPipeline(__classPrivateFieldGet(this, _Sorter_sortInternals, "f").computePipeline);
-                    pass.setBindGroup(0, __classPrivateFieldGet(this, _Sorter_sortInternals, "f").bindGroupKV);
-                    __classPrivateFieldGet(this, _Sorter_sortInternals, "f").bindGroupPs.forEach((bg) => {
-                        pass.setBindGroup(1, bg);
-                        pass.dispatchWorkgroups(__classPrivateFieldGet(this, _Sorter_sortInternals, "f").workGroupCount);
-                    });
-                    pass.end();
-                }
+            // Then do the sort.
+            const pass = encoder.beginComputePass();
+            pass.setPipeline(sortInternals.computePipeline);
+            pass.setBindGroup(0, sortInternals.bindGroupKV);
+            sortInternals.bindGroupPs.forEach((bg) => {
+                pass.setBindGroup(1, bg);
+                pass.dispatchWorkgroups(sortInternals.workGroupCount);
+            });
+            pass.end();
+        }
+        sort() {
+            const encoder = config.device.createCommandEncoder();
+            this.encode(encoder);
+            config.device.queue.submit([encoder.finish()]);
+            return indices;
+        }
+        destroy() {
+            sortInternals.paramBuffers.forEach((b) => b.destroy());
+            distInternals?.distances.destroy();
+            // If we created the index buffer, we destroy it also.
+            if (!!!config.indices) {
+                indices.destroy();
             }
-            sort() {
-                const encoder = config.device.createCommandEncoder();
-                this.encode(encoder);
-                config.device.queue.submit([encoder.finish()]);
-                return config.v ?? __classPrivateFieldGet(this, _Sorter_distInternals, "f").v;
-            }
-            destroy() {
-                __classPrivateFieldGet(this, _Sorter_distInternals, "f").k?.destroy();
-                __classPrivateFieldGet(this, _Sorter_distInternals, "f").v?.destroy();
-                __classPrivateFieldGet(this, _Sorter_sortInternals, "f").paramBuffers.forEach((b) => b.destroy());
-            }
-        },
-        _Sorter_distInternals = new WeakMap(),
-        _Sorter_sortInternals = new WeakMap(),
-        _a)();
+        }
+    })();
 }
 
-export { SortInPlaceElementType, createInPlaceSorter, createIndexSorter };
+export { ComparisonElementType, createInPlaceSorter, createIndexSorter };
 //# sourceMappingURL=sort.module.js.map

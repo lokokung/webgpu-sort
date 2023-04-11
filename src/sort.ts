@@ -7,11 +7,15 @@ import { nextPowerOfTwo } from './webgpu/util/math.js';
 export type SortMode = 'ascending' | 'descending';
 
 /** Basic element type interface that is extended by implementations. */
-interface ElementType {
+interface SortElementType {
   /** Name of the element type. */
   type: string;
   /** Struct definition of the element type if applicable. */
   definition?: string;
+}
+interface SortElementTypeReified extends SortElementType {
+  /** Size of the element type when used in WebGPU. */
+  size: number;
 }
 
 /** General WGSL function structure. */
@@ -26,30 +30,64 @@ export interface WGSLFunction {
 export interface WGSLDistanceFunction extends WGSLFunction {
   /** Type of the result computed via the distance function. Note that it must be an in-place
    *  sortable element. */
-  distType: SortInPlaceElementType;
+  distType: ComparisonElementType;
+  /** Additional bind groups that may be needed for the distance function. Note that bind group 0
+   *  is reserved and cannot be used here. */
+  bindGroups?: { index: number; bindGroupLayout: GPUBindGroupLayout; bindGroup: GPUBindGroup }[];
+}
+interface WGSLDistanceFunctionReified extends WGSLFunction {
+  /** Type of the result computed via the distance function. Note that it must be an in-place
+   *  sortable element. */
+  distType: ComparisonElementTypeReified;
+  /** Additional bind groups that may be needed for the distance function. Note that bind group 0
+   *  is reserved and cannot be used here. */
+  bindGroups: { index: number; bindGroupLayout: GPUBindGroupLayout; bindGroup: GPUBindGroup }[];
+}
+function reifyWGSLDistanceFunction(f: WGSLDistanceFunction): WGSLDistanceFunctionReified {
+  const bindGroups = f.bindGroups ?? [];
+  // Sort the extra bind groups and making sure that they are > 0 and increasing.
+  bindGroups.sort((a, b) => {
+    return a.index - b.index;
+  });
+  for (var i = 0; i < bindGroups.length; i++) {
+    assert(
+      bindGroups[i].index === i + 1,
+      'Additional bind groups must be consecutive starting from 1 since 0 is reserved.'
+    );
+  }
+  return { ...f, distType: reifyComparisonElementType(f.distType), bindGroups };
 }
 
-/** In-place sort element type definition and a set of ease-of-use defaults for common types. */
-export interface SortInPlaceElementType extends ElementType {
+/** In-place sort element type definition. */
+export interface ComparisonElementType extends SortElementType {
   /** Comparison function for the elements, should return true when 'left' < 'right'. */
   comp: WGSLFunction;
 }
-interface SortInPlaceElementTypeMap {
+interface ComparisonElementTypeReified extends SortElementTypeReified {
+  /** Comparison function for the elements, should return true when 'left' < 'right'. */
+  comp: WGSLFunction;
+}
+function reifyComparisonElementType(e: ComparisonElementType): ComparisonElementTypeReified {
+  return { ...e, size: computeSizeOfElement(e) };
+}
+
+/** A set of ease-of-use defaults for common types. */
+interface ComparisonElementTypeMap {
   // Numeric scalar types just use the primitive comparator.
-  u32: SortInPlaceElementType;
-  i32: SortInPlaceElementType;
-  f32: SortInPlaceElementType;
+  u32: ComparisonElementType;
+  i32: ComparisonElementType;
+  f32: ComparisonElementType;
 
   // Numeric vectors use element-wise numeric scalar comparator.
-  vec2u: SortInPlaceElementType;
-  vec3u: SortInPlaceElementType;
-  vec4u: SortInPlaceElementType;
-  vec2i: SortInPlaceElementType;
-  vec3i: SortInPlaceElementType;
-  vec4i: SortInPlaceElementType;
-  vec2f: SortInPlaceElementType;
-  vec3f: SortInPlaceElementType;
-  vec4f: SortInPlaceElementType;
+  vec2u: ComparisonElementType;
+  vec3u: ComparisonElementType;
+  vec4u: ComparisonElementType;
+  vec2i: ComparisonElementType;
+  vec3i: ComparisonElementType;
+  vec4i: ComparisonElementType;
+  vec2f: ComparisonElementType;
+  vec3f: ComparisonElementType;
+  vec4f: ComparisonElementType;
 }
 function numericScalarLt(type: string): string {
   return `fn _lt(l: ${type}, r: ${type}) -> bool { return l < r; }`;
@@ -65,7 +103,7 @@ function numericVectorLt(type: string, n: number) {
     return false;
   }`;
 }
-export const SortInPlaceElementType: SortInPlaceElementTypeMap = {
+export const ComparisonElementType: ComparisonElementTypeMap = {
   u32: {
     type: 'u32',
     comp: { code: numericScalarLt('u32'), entryPoint: '_lt' },
@@ -129,7 +167,7 @@ export interface InPlaceSorterConfig {
   /** The GPU device. */
   device: GPUDevice;
   /** The type of data to sort. */
-  type: SortInPlaceElementType;
+  type: ComparisonElementType | DistanceElementType;
   /** The number of elements expected in the buffer. */
   n: number;
   /** The sort mode of the sorter, defaults to ascending if not specified. */
@@ -139,9 +177,16 @@ export interface InPlaceSorterConfig {
 }
 
 /** Index sort element types definition. */
-export interface SortIndexElementType extends ElementType {
-  /** Distance function used to key the values into a in-place sortable type. */
+export interface DistanceElementType extends SortElementType {
+  /** Distance function used to key the values into an in-place sortable type. */
   dist: WGSLDistanceFunction;
+}
+interface DistanceElementTypeReified extends SortElementTypeReified {
+  /** Distance function used to key the values into an in-place sortable type. */
+  dist: WGSLDistanceFunctionReified;
+}
+function reifyDistanceElementType(e: DistanceElementType): DistanceElementTypeReified {
+  return { ...e, dist: reifyWGSLDistanceFunction(e.dist), size: computeSizeOfElement(e) };
 }
 
 export interface IndexSorter {
@@ -157,23 +202,18 @@ export interface IndexSorterConfig {
   /** The GPU device. */
   device: GPUDevice;
   /** The type of data to sort. */
-  type: SortIndexElementType;
+  type: ComparisonElementType | DistanceElementType;
   /** The number of elements expected in the buffer. */
   n: number;
   /** The sort mode of the sorter, defaults to ascending if not specified. */
   mode?: SortMode;
   /** Holds the raw data. */
   buffer: GPUBuffer;
-  /** Holds the computed distance values. Optional and will be created if not provided. */
-  k?: GPUBuffer;
   /** Holds the sorted indices. Optional and will be created if not provided. */
-  v?: GPUBuffer;
-  /** Additional bind groups that may be needed for the distance function. Note that bind group 0
-   *  is reserved and cannot be used here. */
-  bindGroups?: { index: number; bindGroupLayout: GPUBindGroupLayout; bindGroup: GPUBindGroup }[];
+  indices?: GPUBuffer;
 }
 
-function computeSizeOfElement(elemType: ElementType): number {
+function computeSizeOfElement(elemType: SortElementType): number {
   const code = `
   ${!!elemType.definition ? elemType.definition : ''}
   struct Element {
@@ -188,35 +228,40 @@ enum BitonicPassAlgorithm {
   LocalBms = 0,
   LocalDisperse,
   BigFlip,
-  BigDisperse
+  BigDisperse,
 }
 
 function createSortKeyValueInPlaceShader(
-  type: SortInPlaceElementType,
+  keyType: ComparisonElementTypeReified,
   mode: SortMode,
   wgs: number,
   n: number,
-  kv_pairs: boolean = true
+  valueType?: SortElementTypeReified
 ): string {
   return `
   struct Params {
     h: u32,
     algorithm: u32
   };
-  ${type.definition ? type.definition : ''}
+  ${keyType.definition ?? ''}
+  ${valueType?.definition ?? ''}
 
-  @group(0) @binding(0) var<storage, read_write> k: array<${type.type}>;
-  ${kv_pairs ? '@group(0) @binding(1) var<storage, read_write> v: array<u32>;' : ''}
+  @group(0) @binding(0) var<storage, read_write> k: array<${keyType.type}, ${n}>;
+  ${
+    valueType
+      ? `@group(0) @binding(1) var<storage, read_write> v: array<${valueType.type}, ${n}>;`
+      : ''
+  }
   @group(1) @binding(0) var<uniform> params: Params;
 
-  var<workgroup> local_k: array<${type.type}, ${wgs * 2}>;
-  ${kv_pairs ? `var<workgroup> local_v: array<u32, ${wgs * 2}>;` : ''}
+  var<workgroup> local_k: array<${keyType.type}, ${wgs * 2}>;
+  ${valueType ? `var<workgroup> local_v: array<${valueType.type}, ${wgs * 2}>;` : ''}
 
   // Comparison function.
-  ${type.comp.code}
+  ${keyType.comp.code}
 
-  fn _compare(left: ${type.type}, right: ${type.type}) -> bool {
-    return ${mode === 'ascending' ? '' : '!'}${type.comp.entryPoint}(left, right);
+  fn _compare(left: ${keyType.type}, right: ${keyType.type}) -> bool {
+    return ${mode === 'ascending' ? '' : '!'}${keyType.comp.entryPoint}(left, right);
   }
 
   fn global_compare_and_swap(idx: vec2u) {
@@ -231,7 +276,7 @@ function createSortKeyValueInPlaceShader(
 
       // Conditionally swap the values as well.
       ${
-        kv_pairs
+        valueType
           ? `
       let tmp_v = v[idx.x];
       v[idx.x] = v[idx.y];
@@ -254,7 +299,7 @@ function createSortKeyValueInPlaceShader(
 
       // Conditionally swap the values as well.
       ${
-        kv_pairs
+        valueType
           ? `
       let tmp_v = local_v[idx.x];
       local_v[idx.x] = local_v[idx.y];
@@ -268,14 +313,14 @@ function createSortKeyValueInPlaceShader(
   fn local_init(offset: u32, i: u32) {
     if (offset + i < ${n}) {
       local_k[i] = k[offset + i];
-      ${kv_pairs ? `local_v[i] = v[offset + i];` : ''}
+      ${valueType ? `local_v[i] = v[offset + i];` : ''}
     }
   }
 
   fn local_flush(offset: u32, i: u32) {
     if (offset + i < ${n}) {
       k[offset + i] = local_k[i];
-      ${kv_pairs ? `v[offset + i] = local_v[i];` : ''}
+      ${valueType ? `v[offset + i] = local_v[i];` : ''}
     }
   }
 
@@ -368,42 +413,46 @@ function createSortKeyValueInPlaceShader(
   `;
 }
 
-function createDistanceMapShader(type: SortIndexElementType, wgs: number, n: number): string {
+function createDistanceMapShader(
+  keyType: DistanceElementTypeReified,
+  wgs: number,
+  n: number,
+  initIndices: boolean = false
+): string {
   return `
   // Declare the custom struct type(s)
-  ${type.dist.distType.definition ? type.dist.distType.definition : ''}
-  ${type.definition ? type.definition : ''}
+  ${keyType.dist.distType.definition ?? ''}
+  ${keyType.definition ?? ''}
 
   // Declare the distance mapping function.
-  ${type.dist.code}
+  ${keyType.dist.code}
 
-  @group(0) @binding(0) var<storage, read> input: array<${type.type}, ${n}>;
-  @group(0) @binding(1) var<storage, read_write> k: array<${type.dist.distType.type}, ${n}>;
-  @group(0) @binding(2) var<storage, read_write> v: array<u32, ${n}>;
+  @group(0) @binding(0) var<storage, read> input: array<${keyType.type}, ${n}>;
+  @group(0) @binding(1) var<storage, read_write> distances: array<${
+    keyType.dist.distType.type
+  }, ${n}>;
+  ${initIndices ? `@group(0) @binding(2) var<storage, read_write> indices: array<u32, ${n}>;` : ''}
 
   @compute @workgroup_size(${wgs}) fn main(@builtin(global_invocation_id) i: vec3u) {
     if (i.x < ${n}) {
-      k[i.x] = ${type.dist.entryPoint}(input[i.x]);
-      v[i.x] = i.x;
+      distances[i.x] = ${keyType.dist.entryPoint}(input[i.x]);
+      ${initIndices ? 'indices[i.x] = i.x;' : ''}
     }
   }
   `;
 }
 
 function initDistanceMap(
-  type: SortIndexElementType,
+  keyType: DistanceElementTypeReified,
   device: GPUDevice,
   n: number,
   buffer: GPUBuffer,
-  k?: GPUBuffer,
-  v?: GPUBuffer,
-  bindGroupLayouts: GPUBindGroupLayout[] = []
+  indices?: GPUBuffer // Special case: this should only be passed for index sorting.
 ): {
   computePipeline: GPUComputePipeline;
   workGroupCount: number;
   bindGroup: GPUBindGroup;
-  k?: GPUBuffer;
-  v?: GPUBuffer;
+  distances: GPUBuffer;
 } {
   const alignedN: number = nextPowerOfTwo(n);
   const workGroupSize: number = Math.min(device.limits.maxComputeWorkgroupSizeX, alignedN);
@@ -411,7 +460,7 @@ function initDistanceMap(
 
   // Create the shader.
   const shader: GPUShaderModule = device.createShaderModule({
-    code: createDistanceMapShader(type, workGroupSize, n),
+    code: createDistanceMapShader(keyType, workGroupSize, n, !!indices),
   });
 
   // Create the bind group layout.
@@ -427,18 +476,22 @@ function initDistanceMap(
         visibility: GPUShaderStage.COMPUTE,
         buffer: { type: 'storage' },
       },
-      {
-        binding: 2,
-        visibility: GPUShaderStage.COMPUTE,
-        buffer: { type: 'storage' },
-      },
+      ...(indices
+        ? ([
+            {
+              binding: 2,
+              visibility: GPUShaderStage.COMPUTE,
+              buffer: { type: 'storage' },
+            },
+          ] as GPUBindGroupLayoutEntry[])
+        : []),
     ],
   });
 
   // Create the compute pipeline needed.
   const computePipeline = device.createComputePipeline({
     layout: device.createPipelineLayout({
-      bindGroupLayouts: [bindGroupLayout, ...bindGroupLayouts],
+      bindGroupLayouts: [bindGroupLayout, ...keyType.dist.bindGroups.map(x => x.bindGroupLayout)],
     }),
     compute: {
       module: shader,
@@ -446,45 +499,36 @@ function initDistanceMap(
     },
   });
 
-  // Create output buffers as needed.
-  const keySize = computeSizeOfElement(type.dist.distType);
-  const keys =
-    k ??
-    device.createBuffer({
-      size: keySize * n,
-      usage: buffer.usage,
-    });
-  const values =
-    v ??
-    device.createBuffer({
-      size: 4 * n,
-      usage: buffer.usage,
-    });
+  // Create output buffer.
+  const distances = device.createBuffer({
+    size: keyType.dist.distType.size * n,
+    usage: buffer.usage,
+  });
 
   // Create the bind group.
   const bindGroup = device.createBindGroup({
     layout: computePipeline.getBindGroupLayout(0),
     entries: [
       { binding: 0, resource: { buffer: buffer } },
-      { binding: 1, resource: { buffer: keys } },
-      { binding: 2, resource: { buffer: values } },
+      { binding: 1, resource: { buffer: distances } },
+      ...(indices ? [{ binding: 2, resource: { buffer: indices } }] : []),
     ],
   });
   return {
     computePipeline,
     workGroupCount,
     bindGroup,
-    k: !!k ? undefined : keys,
-    v: !!v ? undefined : values,
+    distances,
   };
 }
 
 function initKeyValueInPlaceSort(
-  type: SortInPlaceElementType,
   mode: SortMode,
   device: GPUDevice,
   n: number,
+  keyType: ComparisonElementTypeReified,
   k: GPUBuffer,
+  valueType?: SortElementTypeReified,
   v?: GPUBuffer
 ): {
   /** The compute pipeline for the in place sort. */
@@ -499,11 +543,12 @@ function initKeyValueInPlaceSort(
   paramBuffers: GPUBuffer[];
 } {
   const alignedN: number = nextPowerOfTwo(n);
-  const elemSize: number = computeSizeOfElement(type);
   // We need to make sure that we do not over allocate workgroup memory depending on the size of
   // elements.
   const maxWorkGroupSizeForMemory =
-    device.limits.maxComputeWorkgroupStorageSize / 2 / nextPowerOfTwo(elemSize + (v ? 4 : 0));
+    device.limits.maxComputeWorkgroupStorageSize /
+    2 /
+    nextPowerOfTwo(keyType.size + (valueType?.size ?? 0));
   const workGroupSize: number = Math.min(
     device.limits.maxComputeWorkgroupSizeX,
     maxWorkGroupSizeForMemory,
@@ -513,7 +558,7 @@ function initKeyValueInPlaceSort(
 
   // Create the shader.
   const shader: GPUShaderModule = device.createShaderModule({
-    code: createSortKeyValueInPlaceShader(type, mode, workGroupSize, n, !!v),
+    code: createSortKeyValueInPlaceShader(keyType, mode, workGroupSize, n, valueType),
   });
 
   // Create the compute pipeline needed.
@@ -576,23 +621,59 @@ function initKeyValueInPlaceSort(
 }
 
 export function createInPlaceSorter(config: InPlaceSorterConfig): InPlaceSorter {
-  return new (class Sorter implements InPlaceSorter {
-    // Internals that can be reused on each sort for this sorter.
-    #internals = initKeyValueInPlaceSort(
-      config.type,
-      config.mode ?? 'ascending',
-      config.device,
-      config.n,
-      config.buffer
-    );
+  var compType: ComparisonElementTypeReified | undefined;
+  var distType: DistanceElementTypeReified | undefined;
+  if ('comp' in config.type) {
+    compType = reifyComparisonElementType(config.type as ComparisonElementType);
+  }
+  if ('dist' in config.type) {
+    distType = reifyDistanceElementType(config.type as DistanceElementType);
+  }
+  assert(!!compType !== !!distType, 'Exactly one comparison or distance type must be specified.');
 
+  const keyType = compType ?? distType!.dist.distType;
+  const valueType = !!distType ? (distType as SortElementTypeReified) : undefined;
+
+  // Initialize distance mapping if necessary.
+  const distInternals = distType
+    ? initDistanceMap(distType, config.device, config.n, config.buffer, undefined)
+    : undefined;
+
+  const keys = distInternals?.distances ?? config.buffer;
+  const values = !!distType ? config.buffer : undefined;
+
+  // Initialize sorting.
+  const sortInternals = initKeyValueInPlaceSort(
+    config.mode ?? 'ascending',
+    config.device,
+    config.n,
+    keyType,
+    keys,
+    valueType,
+    values
+  );
+
+  return new (class Sorter implements InPlaceSorter {
     public encode(encoder: GPUCommandEncoder): void {
+      // First do the distance mapping if necessary.
+      if (distInternals) {
+        const pass = encoder.beginComputePass();
+        pass.setPipeline(distInternals.computePipeline);
+        pass.setBindGroup(0, distInternals.bindGroup);
+        distType!.dist.bindGroups.forEach(({ index, bindGroup }) => {
+          pass.setBindGroup(index, bindGroup);
+        });
+        pass.dispatchWorkgroups(distInternals.workGroupCount);
+        pass.end();
+      }
+
+      // Then do the sort.
       const pass = encoder.beginComputePass();
-      pass.setPipeline(this.#internals.computePipeline);
-      pass.setBindGroup(0, this.#internals.bindGroupKV);
-      this.#internals.bindGroupPs.forEach((bg: GPUBindGroup) => {
+      pass.setPipeline(sortInternals.computePipeline);
+      pass.setBindGroup(0, sortInternals.bindGroupKV);
+      sortInternals.bindGroupPs.forEach((bg: GPUBindGroup) => {
         pass.setBindGroup(1, bg);
-        pass.dispatchWorkgroups(this.#internals.workGroupCount);
+        pass.dispatchWorkgroups(sortInternals.workGroupCount);
       });
       pass.end();
     }
@@ -604,82 +685,91 @@ export function createInPlaceSorter(config: InPlaceSorterConfig): InPlaceSorter 
     }
 
     destroy(): void {
-      this.#internals.paramBuffers.forEach((b: GPUBuffer) => b.destroy());
+      sortInternals.paramBuffers.forEach((b: GPUBuffer) => b.destroy());
+      distInternals?.distances.destroy();
     }
   })();
 }
 
 export function createIndexSorter(config: IndexSorterConfig): IndexSorter {
-  // TODO: We should add some more verifications here to make sure that the buffers work.
-  const bindGroups = config.bindGroups ?? [];
-
-  // Sort the extra bind groups before iterating and making sure that they are > 0 and increasing.
-  bindGroups.sort((a, b) => {
-    return a.index - b.index;
-  });
-  for (var i = 0; i < bindGroups.length; i++) {
-    assert(
-      bindGroups[i].index === i + 1,
-      'Additional bind groups must be consecutive starting from 1 since 0 is reserved.'
-    );
+  var compType: ComparisonElementTypeReified | undefined;
+  var distType: DistanceElementTypeReified | undefined;
+  if ('comp' in config.type) {
+    compType = reifyComparisonElementType(config.type as ComparisonElementType);
   }
+  if ('dist' in config.type) {
+    distType = reifyDistanceElementType(config.type as DistanceElementType);
+  }
+  assert(!!compType !== !!distType, 'Exactly one comparison or distance type must be specified.');
+
+  const keyType = compType ?? distType!.dist.distType;
+  const valueType = reifyComparisonElementType(ComparisonElementType.u32) as SortElementTypeReified;
+
+  // Create an output buffer for the indices if we were not passed one.
+  const indices =
+    config.indices ??
+    config.device.createBuffer({
+      size: 4 * config.n,
+      usage: config.buffer.usage,
+    });
+
+  // Initialize distance mapping if necessary.
+  const distInternals = distType
+    ? initDistanceMap(distType, config.device, config.n, config.buffer, indices)
+    : undefined;
+
+  const keys = distInternals?.distances ?? config.buffer;
+
+  // Initialize sorting.
+  const sortInternals = initKeyValueInPlaceSort(
+    config.mode ?? 'ascending',
+    config.device,
+    config.n,
+    keyType,
+    keys,
+    valueType,
+    indices
+  );
 
   return new (class Sorter implements IndexSorter {
-    // Internals that can be reused on each sort for this sorter.
-    #distInternals = initDistanceMap(
-      config.type,
-      config.device,
-      config.n,
-      config.buffer,
-      config.k,
-      config.v,
-      bindGroups.map(x => x.bindGroupLayout)
-    );
-    #sortInternals = initKeyValueInPlaceSort(
-      config.type.dist.distType,
-      config.mode ?? 'ascending',
-      config.device,
-      config.n,
-      config.k ?? this.#distInternals.k!,
-      config.v ?? this.#distInternals.v!
-    );
-
     public encode(encoder: GPUCommandEncoder): void {
-      // First do the distance map.
-      {
+      // First do the distance mapping if necessary.
+      if (distInternals) {
         const pass = encoder.beginComputePass();
-        pass.setPipeline(this.#distInternals.computePipeline);
-        pass.setBindGroup(0, this.#distInternals.bindGroup);
-        bindGroups.forEach(({ index, bindGroup }) => {
+        pass.setPipeline(distInternals.computePipeline);
+        pass.setBindGroup(0, distInternals.bindGroup);
+        distType!.dist.bindGroups.forEach(({ index, bindGroup }) => {
           pass.setBindGroup(index, bindGroup);
         });
-        pass.dispatchWorkgroups(this.#distInternals.workGroupCount);
+        pass.dispatchWorkgroups(distInternals.workGroupCount);
         pass.end();
       }
-      // Then do the sorting.
-      {
-        const pass = encoder.beginComputePass();
-        pass.setPipeline(this.#sortInternals.computePipeline);
-        pass.setBindGroup(0, this.#sortInternals.bindGroupKV);
-        this.#sortInternals.bindGroupPs.forEach((bg: GPUBindGroup) => {
-          pass.setBindGroup(1, bg);
-          pass.dispatchWorkgroups(this.#sortInternals.workGroupCount);
-        });
-        pass.end();
-      }
+
+      // Then do the sort.
+      const pass = encoder.beginComputePass();
+      pass.setPipeline(sortInternals.computePipeline);
+      pass.setBindGroup(0, sortInternals.bindGroupKV);
+      sortInternals.bindGroupPs.forEach((bg: GPUBindGroup) => {
+        pass.setBindGroup(1, bg);
+        pass.dispatchWorkgroups(sortInternals.workGroupCount);
+      });
+      pass.end();
     }
 
     sort(): GPUBuffer {
       const encoder = config.device.createCommandEncoder();
       this.encode(encoder);
       config.device.queue.submit([encoder.finish()]);
-      return config.v ?? this.#distInternals.v!;
+      return indices;
     }
 
     destroy(): void {
-      this.#distInternals.k?.destroy();
-      this.#distInternals.v?.destroy();
-      this.#sortInternals.paramBuffers.forEach((b: GPUBuffer) => b.destroy());
+      sortInternals.paramBuffers.forEach((b: GPUBuffer) => b.destroy());
+      distInternals?.distances.destroy();
+      // If we created the index buffer, we destroy it also.
+      if (!!!config.indices) {
+        indices.destroy();
+      }
     }
   })();
 }
