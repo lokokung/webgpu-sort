@@ -413,11 +413,22 @@ function createSortKeyValueInPlaceShader(
   `;
 }
 
+function createSetIndicesShader(wgs: number, n: number): string {
+  return `
+  @group(0) @binding(0) var<storage, read_write> indices: array<u32, ${n}>;
+
+  @compute @workgroup_size(${wgs}) fn main(@builtin(global_invocation_id) i: vec3u) {
+    if (i.x < ${n}) {
+      indices[i.x] = i.x;
+    }
+  }
+  `;
+}
+
 function createDistanceMapShader(
   keyType: DistanceElementTypeReified,
   wgs: number,
-  n: number,
-  initIndices: boolean = false
+  n: number
 ): string {
   return `
   // Declare the custom struct type(s)
@@ -431,23 +442,56 @@ function createDistanceMapShader(
   @group(0) @binding(1) var<storage, read_write> distances: array<${
     keyType.dist.distType.type
   }, ${n}>;
-  ${initIndices ? `@group(0) @binding(2) var<storage, read_write> indices: array<u32, ${n}>;` : ''}
 
   @compute @workgroup_size(${wgs}) fn main(@builtin(global_invocation_id) i: vec3u) {
     if (i.x < ${n}) {
       distances[i.x] = ${keyType.dist.entryPoint}(input[i.x]);
-      ${initIndices ? 'indices[i.x] = i.x;' : ''}
     }
   }
   `;
+}
+
+function initSetIndices(
+  device: GPUDevice,
+  n: number,
+  indices: GPUBuffer
+): {
+  computePipeline: GPUComputePipeline;
+  workGroupCount: number;
+  bindGroup: GPUBindGroup;
+} {
+  const alignedN: number = nextPowerOfTwo(n);
+  const workGroupSize: number = Math.min(device.limits.maxComputeWorkgroupSizeX, alignedN);
+  const workGroupCount: number = alignedN / workGroupSize;
+
+  // Create the shader.
+  const shader: GPUShaderModule = device.createShaderModule({
+    code: createSetIndicesShader(workGroupSize, n),
+  });
+
+  // Create the compute pipeline needed.
+  const computePipeline = device.createComputePipeline({
+    layout: 'auto',
+    compute: {
+      module: shader,
+      entryPoint: 'main',
+    },
+  });
+
+  // Create the bind group.
+  const bindGroup = device.createBindGroup({
+    layout: computePipeline.getBindGroupLayout(0),
+    entries: [{ binding: 0, resource: { buffer: indices } }],
+  });
+
+  return { computePipeline, workGroupCount, bindGroup };
 }
 
 function initDistanceMap(
   keyType: DistanceElementTypeReified,
   device: GPUDevice,
   n: number,
-  buffer: GPUBuffer,
-  indices?: GPUBuffer // Special case: this should only be passed for index sorting.
+  buffer: GPUBuffer
 ): {
   computePipeline: GPUComputePipeline;
   workGroupCount: number;
@@ -460,7 +504,7 @@ function initDistanceMap(
 
   // Create the shader.
   const shader: GPUShaderModule = device.createShaderModule({
-    code: createDistanceMapShader(keyType, workGroupSize, n, !!indices),
+    code: createDistanceMapShader(keyType, workGroupSize, n),
   });
 
   // Create the bind group layout.
@@ -476,15 +520,6 @@ function initDistanceMap(
         visibility: GPUShaderStage.COMPUTE,
         buffer: { type: 'storage' },
       },
-      ...(indices
-        ? ([
-            {
-              binding: 2,
-              visibility: GPUShaderStage.COMPUTE,
-              buffer: { type: 'storage' },
-            },
-          ] as GPUBindGroupLayoutEntry[])
-        : []),
     ],
   });
 
@@ -511,7 +546,6 @@ function initDistanceMap(
     entries: [
       { binding: 0, resource: { buffer: buffer } },
       { binding: 1, resource: { buffer: distances } },
-      ...(indices ? [{ binding: 2, resource: { buffer: indices } }] : []),
     ],
   });
   return {
@@ -636,7 +670,7 @@ export function createInPlaceSorter(config: InPlaceSorterConfig): InPlaceSorter 
 
   // Initialize distance mapping if necessary.
   const distInternals = distType
-    ? initDistanceMap(distType, config.device, config.n, config.buffer, undefined)
+    ? initDistanceMap(distType, config.device, config.n, config.buffer)
     : undefined;
 
   const keys = distInternals?.distances ?? config.buffer;
@@ -713,9 +747,12 @@ export function createIndexSorter(config: IndexSorterConfig): IndexSorter {
       usage: config.buffer.usage,
     });
 
+  // Initialize index setting.
+  const indexInternals = initSetIndices(config.device, config.n, indices);
+
   // Initialize distance mapping if necessary.
   const distInternals = distType
-    ? initDistanceMap(distType, config.device, config.n, config.buffer, indices)
+    ? initDistanceMap(distType, config.device, config.n, config.buffer)
     : undefined;
 
   const keys = distInternals?.distances ?? config.buffer;
@@ -733,15 +770,20 @@ export function createIndexSorter(config: IndexSorterConfig): IndexSorter {
 
   return new (class Sorter implements IndexSorter {
     public encode(encoder: GPUCommandEncoder): void {
-      // First do the distance mapping if necessary.
-      if (distInternals) {
+      // First do the index setting and distance mapping if necessary.
+      {
         const pass = encoder.beginComputePass();
-        pass.setPipeline(distInternals.computePipeline);
-        pass.setBindGroup(0, distInternals.bindGroup);
-        distType!.dist.bindGroups.forEach(({ index, bindGroup }) => {
-          pass.setBindGroup(index, bindGroup);
-        });
-        pass.dispatchWorkgroups(distInternals.workGroupCount);
+        pass.setPipeline(indexInternals.computePipeline);
+        pass.setBindGroup(0, indexInternals.bindGroup);
+        pass.dispatchWorkgroups(indexInternals.workGroupCount);
+        if (distInternals) {
+          pass.setPipeline(distInternals.computePipeline);
+          pass.setBindGroup(0, distInternals.bindGroup);
+          distType!.dist.bindGroups.forEach(({ index, bindGroup }) => {
+            pass.setBindGroup(index, bindGroup);
+          });
+          pass.dispatchWorkgroups(distInternals.workGroupCount);
+        }
         pass.end();
       }
 

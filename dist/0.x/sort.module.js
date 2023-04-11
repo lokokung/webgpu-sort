@@ -3234,7 +3234,18 @@ function createSortKeyValueInPlaceShader(keyType, mode, wgs, n, valueType) {
   }
   `;
 }
-function createDistanceMapShader(keyType, wgs, n, initIndices = false) {
+function createSetIndicesShader(wgs, n) {
+    return `
+  @group(0) @binding(0) var<storage, read_write> indices: array<u32, ${n}>;
+
+  @compute @workgroup_size(${wgs}) fn main(@builtin(global_invocation_id) i: vec3u) {
+    if (i.x < ${n}) {
+      indices[i.x] = i.x;
+    }
+  }
+  `;
+}
+function createDistanceMapShader(keyType, wgs, n) {
     return `
   // Declare the custom struct type(s)
   ${keyType.dist.distType.definition ?? ''}
@@ -3245,24 +3256,44 @@ function createDistanceMapShader(keyType, wgs, n, initIndices = false) {
 
   @group(0) @binding(0) var<storage, read> input: array<${keyType.type}, ${n}>;
   @group(0) @binding(1) var<storage, read_write> distances: array<${keyType.dist.distType.type}, ${n}>;
-  ${initIndices ? `@group(0) @binding(2) var<storage, read_write> indices: array<u32, ${n}>;` : ''}
 
   @compute @workgroup_size(${wgs}) fn main(@builtin(global_invocation_id) i: vec3u) {
     if (i.x < ${n}) {
       distances[i.x] = ${keyType.dist.entryPoint}(input[i.x]);
-      ${initIndices ? 'indices[i.x] = i.x;' : ''}
     }
   }
   `;
 }
-function initDistanceMap(keyType, device, n, buffer, indices // Special case: this should only be passed for index sorting.
-) {
+function initSetIndices(device, n, indices) {
     const alignedN = nextPowerOfTwo(n);
     const workGroupSize = Math.min(device.limits.maxComputeWorkgroupSizeX, alignedN);
     const workGroupCount = alignedN / workGroupSize;
     // Create the shader.
     const shader = device.createShaderModule({
-        code: createDistanceMapShader(keyType, workGroupSize, n, !!indices),
+        code: createSetIndicesShader(workGroupSize, n),
+    });
+    // Create the compute pipeline needed.
+    const computePipeline = device.createComputePipeline({
+        layout: 'auto',
+        compute: {
+            module: shader,
+            entryPoint: 'main',
+        },
+    });
+    // Create the bind group.
+    const bindGroup = device.createBindGroup({
+        layout: computePipeline.getBindGroupLayout(0),
+        entries: [{ binding: 0, resource: { buffer: indices } }],
+    });
+    return { computePipeline, workGroupCount, bindGroup };
+}
+function initDistanceMap(keyType, device, n, buffer) {
+    const alignedN = nextPowerOfTwo(n);
+    const workGroupSize = Math.min(device.limits.maxComputeWorkgroupSizeX, alignedN);
+    const workGroupCount = alignedN / workGroupSize;
+    // Create the shader.
+    const shader = device.createShaderModule({
+        code: createDistanceMapShader(keyType, workGroupSize, n),
     });
     // Create the bind group layout.
     const bindGroupLayout = device.createBindGroupLayout({
@@ -3277,15 +3308,6 @@ function initDistanceMap(keyType, device, n, buffer, indices // Special case: th
                 visibility: GPUShaderStage.COMPUTE,
                 buffer: { type: 'storage' },
             },
-            ...(indices
-                ? [
-                    {
-                        binding: 2,
-                        visibility: GPUShaderStage.COMPUTE,
-                        buffer: { type: 'storage' },
-                    },
-                ]
-                : []),
         ],
     });
     // Create the compute pipeline needed.
@@ -3309,7 +3331,6 @@ function initDistanceMap(keyType, device, n, buffer, indices // Special case: th
         entries: [
             { binding: 0, resource: { buffer: buffer } },
             { binding: 1, resource: { buffer: distances } },
-            ...(indices ? [{ binding: 2, resource: { buffer: indices } }] : []),
         ],
     });
     return {
@@ -3396,7 +3417,7 @@ function createInPlaceSorter(config) {
     const valueType = !!distType ? distType : undefined;
     // Initialize distance mapping if necessary.
     const distInternals = distType
-        ? initDistanceMap(distType, config.device, config.n, config.buffer, undefined)
+        ? initDistanceMap(distType, config.device, config.n, config.buffer)
         : undefined;
     const keys = distInternals?.distances ?? config.buffer;
     const values = !!distType ? config.buffer : undefined;
@@ -3454,24 +3475,31 @@ function createIndexSorter(config) {
             size: 4 * config.n,
             usage: config.buffer.usage,
         });
+    // Initialize index setting.
+    const indexInternals = initSetIndices(config.device, config.n, indices);
     // Initialize distance mapping if necessary.
     const distInternals = distType
-        ? initDistanceMap(distType, config.device, config.n, config.buffer, indices)
+        ? initDistanceMap(distType, config.device, config.n, config.buffer)
         : undefined;
     const keys = distInternals?.distances ?? config.buffer;
     // Initialize sorting.
     const sortInternals = initKeyValueInPlaceSort(config.mode ?? 'ascending', config.device, config.n, keyType, keys, valueType, indices);
     return new (class Sorter {
         encode(encoder) {
-            // First do the distance mapping if necessary.
-            if (distInternals) {
+            // First do the index setting and distance mapping if necessary.
+            {
                 const pass = encoder.beginComputePass();
-                pass.setPipeline(distInternals.computePipeline);
-                pass.setBindGroup(0, distInternals.bindGroup);
-                distType.dist.bindGroups.forEach(({ index, bindGroup }) => {
-                    pass.setBindGroup(index, bindGroup);
-                });
-                pass.dispatchWorkgroups(distInternals.workGroupCount);
+                pass.setPipeline(indexInternals.computePipeline);
+                pass.setBindGroup(0, indexInternals.bindGroup);
+                pass.dispatchWorkgroups(indexInternals.workGroupCount);
+                if (distInternals) {
+                    pass.setPipeline(distInternals.computePipeline);
+                    pass.setBindGroup(0, distInternals.bindGroup);
+                    distType.dist.bindGroups.forEach(({ index, bindGroup }) => {
+                        pass.setBindGroup(index, bindGroup);
+                    });
+                    pass.dispatchWorkgroups(distInternals.workGroupCount);
+                }
                 pass.end();
             }
             // Then do the sort.

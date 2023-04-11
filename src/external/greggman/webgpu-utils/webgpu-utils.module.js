@@ -2936,7 +2936,7 @@ function setStructuredView(data, views) {
             view[0] = data;
         }
         else {
-            view.set(data);
+            view.set(data.flat(Infinity));
         }
     }
     else if (Array.isArray(views)) {
