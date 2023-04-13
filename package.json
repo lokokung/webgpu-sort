@@ -1,6 +1,6 @@
 {
   "name": "webgpu-sort",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "module": "dist/0.x/sort.module.js",
   "types": "dist/0.x/sort.module.d.ts",
   "scripts": {
