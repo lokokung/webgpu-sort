@@ -4,12 +4,13 @@
   "module": "dist/0.x/sort.module.js",
   "types": "dist/0.x/sort.module.d.ts",
   "scripts": {
-    "build": "rollup -c --bundleConfigAsCjs",
+    "build": "rollup -c --bundleConfigAsCjs && cp dist/0.x/out/sort.d.ts dist/0.x/sort.module.d.ts",
     "start": "node tools/dev_server"
   },
   "devDependencies": {
     "@babel/core": "^7.21.3",
     "@babel/preset-typescript": "^7.21.0",
+    "@rollup/plugin-node-resolve": "^15.0.2",
     "@rollup/plugin-typescript": "^11.1.0",
     "@types/babel__core": "^7.20.0",
     "@types/express": "^4.17.17",
@@ -19,6 +20,7 @@
     "@types/serve-index": "^1.9.1",
     "@webgpu/types": "gpuweb/types#e836ed695b7a8774da4cdee0787b24011992400d",
     "babel-plugin-add-header-comment": "^1.0.3",
+    "babel-plugin-bare-import-rewrite": "^2.0.0",
     "babel-plugin-const-enum": "^1.2.0",
     "chokidar": "^3.5.3",
     "eslint": "^8.37.0",
@@ -29,6 +31,7 @@
     "serve-index": "^1.9.1",
     "ts-node": "^10.9.1",
     "tslib": "^2.5.0",
-    "typescript": "^5.0.2"
+    "typescript": "^5.0.2",
+    "webgpu-utils": "github:greggman/webgpu-utils"
   }
 }

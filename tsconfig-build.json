@@ -17,7 +17,5 @@
     "target": "es2020",
     "types": ["@webgpu/types", "jquery"]
   },
-  "include": [
-    "src/**/*.ts",
-  ],
+  "files": ["src/sort.ts"]
 }

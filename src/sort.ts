@@ -1,5 +1,5 @@
 import { assert } from './common/util/util.js';
-import { makeShaderDataDefinitions } from './external/greggman/webgpu-utils/webgpu-utils.module.js';
+import { makeShaderDataDefinitions } from 'webgpu-utils';
 import { makeBufferWithContents } from './webgpu/util/buffer.js';
 import { nextPowerOfTwo } from './webgpu/util/math.js';
 

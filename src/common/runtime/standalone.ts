@@ -3,12 +3,13 @@
 import { dataCache } from '../framework/data_cache.js';
 import { setBaseResourcePath } from '../framework/resources.js';
 import { DefaultTestFileLoader } from '../internal/file_loader.js';
+import { ErrorWithExtra } from '../internal/logging/log_message.js';
 import { Logger } from '../internal/logging/logger.js';
 import { LiveTestCaseResult } from '../internal/logging/result.js';
 import { parseQuery } from '../internal/query/parseQuery.js';
 import { TestQueryLevel } from '../internal/query/query.js';
 import { TestTreeNode, TestSubtree, TestTreeLeaf, TestTree } from '../internal/tree.js';
-import { ErrorWithExtra, assert, unreachable } from '../util/util.js';
+import { assert, unreachable } from '../util/util.js';
 
 const rootQuerySpec = 'tests:*';
 let promptBeforeReload = false;

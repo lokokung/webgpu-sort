@@ -128,10 +128,25 @@ app.get('/out/:suite/listing.js', async (req, res, next) => {
   }
 });
 
+// Serve node_modules files by just fetching the source.
+app.get('/node_modules/**/*.js', async (req, res, next) => {
+  let absPath = path.join('.', req.url);
+  try {
+    const result = await babel.transformFileAsync(absPath, babelConfig);
+    if (result && result.code) {
+      res.setHeader('Content-Type', 'application/javascript');
+      res.send(result.code);
+    } else {
+      throw new Error(`Failed compile ${absPath}.`);
+    }
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Serve all other .js files by fetching the source .ts file and compiling it.
 app.get('/out/**/*.js|/out/*.js', async (req, res, next) => {
   const jsUrl = path.relative('/out', req.url);
-  console.log(jsUrl);
   const tsUrl = jsUrl.replace(/\.js$/, '.ts');
   if (compileCache.has(tsUrl)) {
     res.setHeader('Content-Type', 'application/javascript');

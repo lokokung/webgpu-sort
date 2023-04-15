@@ -9,11 +9,10 @@
   "files.trimFinalNewlines": true,
   "files.trimTrailingWhitespace": true,
   "files.exclude": {
-    "*.tmp.txt": true,
     ".gitignore": true,
+    "*.tmp.txt": true,
     "node_modules": true,
-    "out": true,
-    "package-lock.json": true
+    "out": true
   },
   // Configure VSCode to use the right style when automatically adding imports on autocomplete.
   "typescript.preferences.importModuleSpecifier": "relative",

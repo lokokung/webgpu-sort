@@ -11,10 +11,11 @@ import { getGPU } from '../common/util/navigator_gpu.js';
 import { assert, objectEquals, unreachable } from '../common/util/util.js';
 import {
   StructDefinition,
-  StructuredView,
+  TypedArray,
+  Views,
   makeShaderDataDefinitions,
   makeStructuredView,
-} from '../external/greggman/webgpu-utils/webgpu-utils.module.js';
+} from 'webgpu-utils';
 import {
   ComparisonElementType,
   DistanceElementType,
@@ -61,7 +62,11 @@ function* zip(arrays: any[]) {
 }
 
 /** Compares 2 arrays and prints out differences. */
-function compare(expected: any[], actual: any[], comp?: (l: any, r: any) => boolean): boolean {
+function compare(
+  expected: any[],
+  actual: any[] | TypedArray,
+  comp?: (l: any, r: any) => boolean
+): boolean {
   assert(
     expected.length === actual.length,
     `Unable to compare arrays of different length: ${expected.length} != ${actual.length}`
@@ -107,7 +112,7 @@ async function readback(
   device: GPUDevice,
   buffer: GPUBuffer,
   structDefinition: StructDefinition
-): Promise<StructuredView> {
+): Promise<TypedArray> {
   const readback = device.createBuffer({
     size: buffer.size,
     usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
@@ -116,7 +121,9 @@ async function readback(
   encoder.copyBufferToBuffer(buffer, 0, readback, 0, buffer.size);
   device.queue.submit([encoder.finish()]);
   await readback.mapAsync(GPUMapMode.READ);
-  return makeStructuredView(structDefinition, readback.getMappedRange());
+  return (makeStructuredView(structDefinition, readback.getMappedRange()).views as Views)[
+    'data'
+  ] as TypedArray;
 }
 
 g.test('inplace,scalars')
@@ -186,7 +193,7 @@ Tests in-place sorting of scalar types.
     sorter.sort();
 
     const expected = [...data].sort((a, b) => (mode === 'ascending' ? a - b : b - a));
-    const actual = (await readback(device, buffer, structDef)).views['data'];
+    const actual = await readback(device, buffer, structDef);
     t.expect(compare(expected, actual));
 
     // Destroy the device to free the resources.
@@ -312,7 +319,7 @@ Tests in-place sorting of vector types.
         return 0;
       })
       .flat(Infinity);
-    const actual = (await readback(device, buffer, structDef)).views['data'];
+    const actual = await readback(device, buffer, structDef);
     t.expect(compare(expected, actual));
 
     // Destroy the device to free the resources.
@@ -407,7 +414,7 @@ Tests in-place sorting of structure type.
     const expected = [...data].sort((a, b) =>
       mode === 'ascending' ? a.index - b.index : b.index - a.index
     );
-    const actual = (await readback(device, buffer, structDef)).views['data'];
+    const actual = await readback(device, buffer, structDef);
     t.expect(
       compare(expected, actual, (l, r) => {
         return (
@@ -434,7 +441,7 @@ Tests index sorting of scalar types.
       .combine('type', ['u32', 'i32', 'f32'] as NumericElementTypes[])
       .combine('mode', ['ascending', 'descending'] as SortMode[])
       .beginSubcases()
-      .combine('size', [16, 64, 100, 2048])
+      .combine('size', [16, 64, 100, 2048, 10000])
   )
   .fn(async t => {
     // Initialize WebGPU.
@@ -484,14 +491,8 @@ Tests index sorting of scalar types.
     });
     const indices = sorter.sort();
 
-    // TODO: Known issue of flakiness because indices can be swapped when equal values.
-    const expected = [...data]
-      .map((value, index) => {
-        return { value, index };
-      })
-      .sort((a, b) => (mode === 'ascending' ? a.value - b.value : b.value - a.value))
-      .map(x => x.index);
-    const actual = (await readback(device, indices, indexDef)).views['data'];
+    const expected = [...data].sort((a, b) => (mode === 'ascending' ? a - b : b - a));
+    const actual = [...(await readback(device, indices, indexDef))].map((i: number) => data[i]);
     t.expect(compare(expected, actual));
 
     // Destroy the device to free the resources.
@@ -608,21 +609,15 @@ Tests index sorting of vector types.
     });
     const indices = sorter.sort();
 
-    // TODO: Known issue of flakiness because indices can be swapped when equal values.
-    const expected = [...data]
-      .map((value, index) => {
-        return { value, index };
-      })
-      .sort((a, b) => {
-        for (let [i, j] of zip([a.value, b.value])) {
-          if (i !== j) {
-            return mode === 'ascending' ? i - j : j - i;
-          }
+    const expected = [...data].sort((a, b) => {
+      for (let [i, j] of zip([a, b])) {
+        if (i !== j) {
+          return mode === 'ascending' ? i - j : j - i;
         }
-        return 0;
-      })
-      .map(x => x.index);
-    const actual = (await readback(device, indices, indexDef)).views['data'];
+      }
+      return 0;
+    });
+    const actual = [...(await readback(device, indices, indexDef))].map((i: number) => data[i]);
     t.expect(compare(expected, actual));
 
     // Destroy the device to free the resources.
@@ -715,14 +710,9 @@ Tests index sorting of structure type.
     });
     const indices = sorter.sort();
 
-    const expected = [...data]
-      .map((value, index) => {
-        return { value, index };
-      })
-      .sort((a, b) =>
-        mode === 'ascending' ? a.value.index - b.value.index : b.value.index - a.value.index
-      )
-      .map(x => x.index);
-    const actual = (await readback(device, indices, indexDef)).views['data'];
+    const expected = [...data].sort((a, b) =>
+      mode === 'ascending' ? a.index - b.index : b.index - a.index
+    );
+    const actual = [...(await readback(device, indices, indexDef))].map((i: number) => data[i]);
     t.expect(compare(expected, actual));
   });
