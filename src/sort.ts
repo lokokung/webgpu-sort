@@ -366,7 +366,7 @@ function createSortKeyValueInPlaceShader(
   }
 
   fn local_bms(t: u32, h: u32, offset: u32) {
-    for (var hh : u32 = 2; hh <= h; hh *= 2) {
+    for (var hh: u32 = 2; hh <= h; hh *= 2) {
       local_flip(t, hh, offset);
       local_disperse(t, hh / 2, offset);
     }
